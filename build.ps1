@@ -2,7 +2,7 @@
 # 构建 Windows 可执行文件（纯 Go，无 CGO）
 $ErrorActionPreference = 'Stop'
 
-$Version = if ($env:VERSION) { $env:VERSION } else { '1.0.0' }
+$Version = if ($env:VERSION) { $env:VERSION } else { '1.0.6' }
 $env:CGO_ENABLED = '0'
 
 Write-Host "==> 正在构建 server-inspect.exe (version $Version) ..."

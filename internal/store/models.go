@@ -12,6 +12,7 @@ type Server struct {
 	PasswordEnc string    `json:"-"`
 	HostKey     string    `json:"hostKey,omitempty"`
 	Group       string    `json:"group"`
+	NodeRole    string    `json:"nodeRole"`
 	Tags        string    `json:"tags"`
 	Note        string    `json:"note"`
 	CreatedAt   time.Time `json:"createdAt"`

@@ -300,13 +300,13 @@ go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ### 11.1 版本
 
 - 版本号在 `main.version`，构建时通过 `-X main.version=` 注入。
-- 功能修复/新增后递增版本（示例：1.0.4 → 1.0.5）。
+- 功能修复/新增后递增版本（示例：1.0.5 → 1.0.6）。
 
 ### 11.2 构建
 
 ```bash
 ./release.sh                 # Linux amd64 + arm64 → dist/
-VERSION=1.0.5 ./release.sh   # 指定版本
+VERSION=1.0.6 ./release.sh   # 指定版本
 ```
 
 发布包包含：
@@ -348,7 +348,7 @@ ssh root@host 'bash /tmp/install.sh --port 8080'
 
 - 当前仓库为 `main` 分支，远程 `origin` 已配置为 GitHub（SSH Deploy Key，写权限）。
 - 修改前先 `git status` 确认工作区；重要改动完成后本地提交。
-- 提交信息建议使用下面的前缀；发布时打标签，例如 `git tag -a v1.0.5 -m "release v1.0.5"`。
+- 提交信息建议使用下面的前缀；发布时打标签，例如 `git tag -a v1.0.6 -m "release v1.0.6"`。
 - **不要提交**：`dist/`、`server-inspect.exe`、`data/`、日志、真实凭据。它们已在 `.gitignore` 中排除。
 - 推送：`git push origin main`；发布标签：`git push --tags`。未经用户同意不要 `force push` 或改写历史。
 - `.gitattributes` 已强制 shell/systemd/源码文件使用 LF，避免 Windows 下 checkout 后 Linux 脚本无法执行。

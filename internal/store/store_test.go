@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ func TestStoreServerAndInspection(t *testing.T) {
 
 	srv := &Server{
 		Name: "测试服务器", Host: "10.0.0.1", Port: 22, Username: "root",
-		PasswordEnc: "cipher", Group: "测试", Tags: "a,b", Note: "备注",
+		PasswordEnc: "cipher", Group: "测试", NodeRole: "Web", Tags: "a,b", Note: "备注",
 	}
 	if err := st.CreateServer(srv); err != nil {
 		t.Fatalf("CreateServer: %v", err)
@@ -33,6 +34,9 @@ func TestStoreServerAndInspection(t *testing.T) {
 	}
 	if got.Name != srv.Name || got.PasswordEnc != "cipher" {
 		t.Fatalf("unexpected server: %#v", got)
+	}
+	if got.NodeRole != "Web" {
+		t.Fatalf("node role = %q", got.NodeRole)
 	}
 
 	if err := st.SetHostKey(srv.ID, "SHA256:abc"); err != nil {
@@ -230,6 +234,55 @@ func TestCountInspectionsSinceSameSecond(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("count = %d, want 1 (same-second boundary)", n)
+	}
+}
+
+func TestOpenMigratesNodeRole(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	oldSchema := `CREATE TABLE servers (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		name        TEXT    NOT NULL,
+		host        TEXT    NOT NULL,
+		port        INTEGER NOT NULL DEFAULT 22,
+		username    TEXT    NOT NULL,
+		password    TEXT    NOT NULL DEFAULT '',
+		host_key    TEXT    NOT NULL DEFAULT '',
+		group_name  TEXT    NOT NULL DEFAULT '',
+		tags        TEXT    NOT NULL DEFAULT '',
+		note        TEXT    NOT NULL DEFAULT '',
+		created_at  TEXT    NOT NULL,
+		updated_at  TEXT    NOT NULL
+	)`
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO servers (name,host,port,username,password,created_at,updated_at)
+		VALUES ('legacy','10.1.1.1',22,'root','cipher',?,?)`, now, now); err != nil {
+		t.Fatalf("insert legacy: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open migrated db: %v", err)
+	}
+	defer st.Close()
+
+	sv, err := st.GetServer(1)
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if sv.Name != "legacy" || sv.NodeRole != "" {
+		t.Fatalf("migration lost data or role not empty: %#v", sv)
 	}
 }
 

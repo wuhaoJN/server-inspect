@@ -149,7 +149,7 @@ func TestAuthAndCSRF(t *testing.T) {
 	// 同源写请求成功，且响应中不得包含密码
 	status, resp = call(t, client, http.MethodPost, base+"/api/servers", map[string]any{
 		"name": "测试节点", "host": "127.0.0.1", "port": 22, "username": "root",
-		"password": "super-secret", "group": "g", "tags": "t", "note": "n",
+		"password": "super-secret", "group": "g", "nodeRole": "Web", "tags": "t", "note": "n",
 	}, base)
 	if status != http.StatusOK || !resp.OK {
 		t.Fatalf("create server: status=%d %s", status, resp.Error)
@@ -172,7 +172,7 @@ func TestAuthAndCSRF(t *testing.T) {
 
 	// 更新时留空密码应保持原密文
 	status, resp = call(t, client, http.MethodPut, base+"/api/servers/1", map[string]any{
-		"name": "测试节点-改", "host": "127.0.0.1", "port": 22, "username": "root",
+		"name": "测试节点-改", "host": "127.0.0.1", "port": 22, "username": "root", "nodeRole": "Web",
 	}, base)
 	if status != http.StatusOK || !resp.OK {
 		t.Fatalf("update server: status=%d %s", status, resp.Error)
@@ -192,6 +192,9 @@ func TestAuthAndCSRF(t *testing.T) {
 	}
 	if len(list) != 1 || list[0]["name"] != "测试节点-改" {
 		t.Fatalf("unexpected list: %#v", list)
+	}
+	if list[0]["nodeRole"] != "Web" {
+		t.Fatalf("node role not persisted: %#v", list[0])
 	}
 
 	if status, resp := call(t, client, http.MethodGet, base+"/api/dashboard", nil, ""); status != http.StatusOK || !resp.OK {

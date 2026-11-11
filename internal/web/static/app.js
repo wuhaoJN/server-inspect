@@ -149,8 +149,40 @@ function toast(message, type = 'success') {
   }, 4200);
 }
 
-function openModal({ title, body, wide, size, onClose }) {
-  const overlay = document.createElement('div');
+function closeRowMenus() {
+  document.querySelectorAll('.row-menu').forEach((menu) => menu.remove());
+}
+
+function openRowMenu(anchor, items) {
+  const existing = document.querySelector('.row-menu');
+  if (existing && existing.dataset.menuKey === anchor.dataset.menuKey) {
+    closeRowMenus();
+    return;
+  }
+  closeRowMenus();
+
+  const menu = document.createElement('div');
+  menu.className = 'row-menu';
+  menu.dataset.menuKey = anchor.dataset.menuKey || '';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = items.map((item) => `
+    <button type="button" role="menuitem" class="row-menu-item${item.danger ? ' danger' : ''}"
+      data-action="${esc(item.action)}" data-id="${item.id}">${esc(item.label)}</button>`).join('');
+  document.body.appendChild(menu);
+
+  const rect = anchor.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  let left = rect.right - menuRect.width;
+  left = Math.max(12, Math.min(left, window.innerWidth - menuRect.width - 12));
+  let top = rect.bottom + 6;
+  if (top + menuRect.height > window.innerHeight - 12) {
+    top = rect.top - menuRect.height - 6;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(12, top)}px`;
+}
+
+function openModal({ title, body, wide, size, onClose }) {  const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   const sizeClass = size === 'xl' ? 'modal-xl' : (wide ? 'modal-wide' : '');
   overlay.innerHTML = `<div class="modal ${sizeClass}" role="dialog" aria-modal="true">
@@ -372,6 +404,7 @@ function renderShell() {
 
 function onRoute() {
   if (!state.user) return;
+  closeRowMenus();
   const raw = (location.hash || '').replace(/^#\/?/, '');
   const [name, id] = raw.split('/');
   const page = name || 'dashboard';
@@ -452,7 +485,7 @@ async function viewDashboard() {
       <a class="mini-item" href="${hasReport ? `#/inspections/${v.lastInspectionId}` : '#/servers'}">
         <div class="mini-main">
           <div class="mini-title">${esc(v.name)}</div>
-          <div class="mini-sub">${esc(v.username || '未配置账号')}@${esc(v.host)}:${v.port}${v.group ? ' · ' + esc(v.group) : ''}</div>
+          <div class="mini-sub">${esc(v.username || '未配置账号')}@${esc(v.host)}:${v.port}${v.nodeRole ? ' · ' + esc(v.nodeRole) : ''}${v.group ? ' · ' + esc(v.group) : ''}</div>
         </div>
         <div>${statusBadge(displayStatus)}</div>
         <div class="mini-side"><strong>${hasReport ? v.lastScore + ' 分' : '—'}</strong>${v.configured ? fmtRelative(v.lastAt) : '待配置登录'}</div>
@@ -551,12 +584,13 @@ function filteredServers() {
   const q = state.serverQuery.trim().toLowerCase();
   if (!q) return state.servers;
   return state.servers.filter((v) =>
-    [v.name, v.host, v.group, v.tags, v.username, v.note].some((x) => (x || '').toLowerCase().includes(q)));
+    [v.name, v.host, v.group, v.nodeRole, v.tags, v.username, v.note].some((x) => (x || '').toLowerCase().includes(q)));
 }
 
 function renderServersTable() {
   const wrap = document.getElementById('serversTableWrap');
   if (!wrap) return;
+  closeRowMenus();
 
   if (!state.servers.length) {
     wrap.innerHTML = `<div class="empty">暂未添加服务器<br><br><button class="btn btn-primary" data-action="add-server">＋ 添加第一台服务器</button></div>`;
@@ -586,6 +620,7 @@ function renderServersTable() {
           : `<div class="cell-main">${esc(v.name)}</div>`}
         <div class="cell-sub">${esc(v.username || '未配置账号')}@${esc(v.host)}:${v.port}</div>
       </td>
+      <td>${v.nodeRole ? `<span class="role-text" title="${esc(v.nodeRole)}">${esc(v.nodeRole)}</span>` : '<span class="muted">—</span>'}</td>
       <td>${v.group ? `<span class="chip"><i style="background:var(--primary)"></i>${esc(v.group)}</span>` : '<span class="muted">—</span>'}</td>
       <td>${statusBadge(displayStatus)}</td>
       <td>${score}</td>
@@ -593,10 +628,9 @@ function renderServersTable() {
       <td class="right">
         <div class="row-actions">
           ${v.configured
-            ? `<button class="btn btn-xs btn-primary" data-action="inspect" data-id="${v.id}">巡检</button>
-               <button class="btn btn-xs" data-action="edit-server" data-id="${v.id}">编辑</button>`
+            ? `<button class="btn btn-xs btn-primary" data-action="inspect" data-id="${v.id}">巡检</button>`
             : `<button class="btn btn-xs btn-primary" data-action="edit-server" data-id="${v.id}">配置登录</button>`}
-          <button class="btn btn-xs btn-danger-ghost" data-action="delete-server" data-id="${v.id}">删除</button>
+          <button type="button" class="btn btn-xs row-menu-btn" data-action="row-menu" data-id="${v.id}" data-menu-key="${v.id}" aria-haspopup="menu">更多 ▾</button>
         </div>
       </td>
     </tr>`;
@@ -606,6 +640,7 @@ function renderServersTable() {
     <thead><tr>
       <th class="check-cell"><input type="checkbox" id="selectAll" ${allChecked ? 'checked' : ''} aria-label="全选"></th>
       <th>服务器</th>
+      <th>节点职责</th>
       <th>分组</th>
       <th>最近巡检</th>
       <th>健康分</th>
@@ -868,8 +903,8 @@ function openServerForm(server) {
         <input class="input" id="sf-name" name="name" value="${esc(server ? server.name : '')}" placeholder="例如：生产 Web-01" required maxlength="100">
       </div>
       <div class="field">
-        <label class="label" for="sf-group">分组</label>
-        <input class="input" id="sf-group" name="group" value="${esc(server ? server.group : '')}" placeholder="例如：生产环境" maxlength="50">
+        <label class="label" for="sf-role">节点职责</label>
+        <input class="input" id="sf-role" name="nodeRole" value="${esc(server ? server.nodeRole : '')}" placeholder="例如：Web / DB / Redis / 网关" maxlength="50">
       </div>
     </div>
     <div class="form-row">
@@ -897,13 +932,17 @@ function openServerForm(server) {
     </div>
     <div class="form-row">
       <div class="field">
+        <label class="label" for="sf-group">分组</label>
+        <input class="input" id="sf-group" name="group" value="${esc(server ? server.group : '')}" placeholder="例如：生产环境" maxlength="50">
+      </div>
+      <div class="field">
         <label class="label" for="sf-tags">标签</label>
         <input class="input" id="sf-tags" name="tags" value="${esc(server ? server.tags : '')}" placeholder="以逗号分隔，例如：nginx,核心" maxlength="200">
       </div>
-      <div class="field">
-        <label class="label" for="sf-fp">主机密钥指纹</label>
-        <input class="input mono" id="sf-fp" value="${esc(server && server.hostKey ? server.hostKey : '首次连接时自动记录')}" readonly>
-      </div>
+    </div>
+    <div class="field">
+      <label class="label" for="sf-fp">主机密钥指纹</label>
+      <input class="input mono" id="sf-fp" value="${esc(server && server.hostKey ? server.hostKey : '首次连接时自动记录')}" readonly>
     </div>
     <div class="field">
       <label class="label" for="sf-note">备注</label>
@@ -946,6 +985,7 @@ function openServerForm(server) {
     username: form.elements.username.value.trim(),
     password: form.elements.password.value,
     group: form.elements.group.value.trim(),
+    nodeRole: form.elements.nodeRole.value.trim(),
     tags: form.elements.tags.value.trim(),
     note: form.elements.note.value.trim(),
     serverId: server ? server.id : 0,
@@ -1391,11 +1431,24 @@ document.addEventListener('change', (event) => {
 
 document.addEventListener('click', async (event) => {
   const el = event.target.closest('[data-action]');
-  if (!el) return;
+  if (!el) {
+    closeRowMenus();
+    return;
+  }
   const action = el.dataset.action;
   const id = Number(el.dataset.id || 0);
+  if (action !== 'row-menu') closeRowMenus();
 
   switch (action) {
+    case 'row-menu': {
+      const srv = state.servers.find((v) => v.id === id);
+      if (!srv) break;
+      openRowMenu(el, [
+        { label: '编辑服务器', action: 'edit-server', id },
+        { label: '删除服务器', action: 'delete-server', id, danger: true },
+      ]);
+      break;
+    }
     case 'inspect': {
       const srv = state.servers.find((v) => v.id === id);
       if (srv && !srv.configured) {
@@ -1476,6 +1529,12 @@ document.addEventListener('click', async (event) => {
 
 window.addEventListener('hashchange', () => {
   if (state.user) onRoute();
+});
+
+window.addEventListener('resize', closeRowMenus);
+window.addEventListener('scroll', closeRowMenus, true);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeRowMenus();
 });
 
 /* ---------------- 启动 ---------------- */

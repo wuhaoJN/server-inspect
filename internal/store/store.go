@@ -43,6 +43,7 @@ var schema = []string{
 		password    TEXT    NOT NULL DEFAULT '',
 		host_key    TEXT    NOT NULL DEFAULT '',
 		group_name  TEXT    NOT NULL DEFAULT '',
+		node_role   TEXT    NOT NULL DEFAULT '',
 		tags        TEXT    NOT NULL DEFAULT '',
 		note        TEXT    NOT NULL DEFAULT '',
 		created_at  TEXT    NOT NULL,
@@ -99,7 +100,49 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("初始化数据表失败: %w", err)
 		}
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	if err := st.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// migrate 对已有数据库执行向后兼容的增量迁移（幂等）。
+func (s *Store) migrate() error {
+	columns, err := s.tableColumns("servers")
+	if err != nil {
+		return err
+	}
+	if !columns["node_role"] {
+		if _, err := s.db.Exec(`ALTER TABLE servers ADD COLUMN node_role TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("迁移 servers.node_role 失败: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) tableColumns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, fmt.Errorf("读取表结构失败: %w", err)
+	}
+	defer rows.Close()
+
+	columns := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid          int
+			name, ctype  string
+			notNull, pk  int
+			defaultValue sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 // Close 关闭数据库。
@@ -117,7 +160,7 @@ func parseTime(v string) time.Time {
 
 // ---------- 服务器 ----------
 
-const serverColumns = `id, name, host, port, username, password, host_key, group_name, tags, note, created_at, updated_at`
+const serverColumns = `id, name, host, port, username, password, host_key, group_name, node_role, tags, note, created_at, updated_at`
 
 func scanServer(scanner interface{ Scan(...any) error }) (*Server, error) {
 	var (
@@ -125,7 +168,7 @@ func scanServer(scanner interface{ Scan(...any) error }) (*Server, error) {
 		created, updated string
 	)
 	err := scanner.Scan(&sv.ID, &sv.Name, &sv.Host, &sv.Port, &sv.Username, &sv.PasswordEnc,
-		&sv.HostKey, &sv.Group, &sv.Tags, &sv.Note, &created, &updated)
+		&sv.HostKey, &sv.Group, &sv.NodeRole, &sv.Tags, &sv.Note, &created, &updated)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -144,10 +187,10 @@ func (s *Store) CreateServer(sv *Server) error {
 	}
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`INSERT INTO servers (name, host, port, username, password, host_key, group_name, tags, note, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO servers (name, host, port, username, password, host_key, group_name, node_role, tags, note, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sv.Name, sv.Host, sv.Port, sv.Username, sv.PasswordEnc, sv.HostKey,
-		sv.Group, sv.Tags, sv.Note, now.Format(timeLayout), now.Format(timeLayout),
+		sv.Group, sv.NodeRole, sv.Tags, sv.Note, now.Format(timeLayout), now.Format(timeLayout),
 	)
 	if err != nil {
 		return fmt.Errorf("保存服务器失败: %w", err)
@@ -174,8 +217,8 @@ func (s *Store) CreateServers(servers []*Server) error {
 	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO servers (name, host, port, username, password, host_key, group_name, tags, note, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		`INSERT INTO servers (name, host, port, username, password, host_key, group_name, node_role, tags, note, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("准备批量写入失败: %w", err)
 	}
@@ -188,7 +231,7 @@ func (s *Store) CreateServers(servers []*Server) error {
 			sv.Port = 22
 		}
 		res, err := stmt.Exec(sv.Name, sv.Host, sv.Port, sv.Username, sv.PasswordEnc, sv.HostKey,
-			sv.Group, sv.Tags, sv.Note, timestamp, timestamp)
+			sv.Group, sv.NodeRole, sv.Tags, sv.Note, timestamp, timestamp)
 		if err != nil {
 			return fmt.Errorf("批量保存服务器失败: %w", err)
 		}
@@ -211,9 +254,9 @@ func (s *Store) UpdateServer(sv *Server) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
 		`UPDATE servers SET name = ?, host = ?, port = ?, username = ?, password = ?, host_key = ?,
-		 group_name = ?, tags = ?, note = ?, updated_at = ? WHERE id = ?`,
+		 group_name = ?, node_role = ?, tags = ?, note = ?, updated_at = ? WHERE id = ?`,
 		sv.Name, sv.Host, sv.Port, sv.Username, sv.PasswordEnc, sv.HostKey,
-		sv.Group, sv.Tags, sv.Note, now.Format(timeLayout), sv.ID,
+		sv.Group, sv.NodeRole, sv.Tags, sv.Note, now.Format(timeLayout), sv.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("更新服务器失败: %w", err)
@@ -273,7 +316,7 @@ func (s *Store) SetHostKey(id int64, fingerprint string) error {
 // ListServerViews 查询服务器列表并关联最近一次巡检结果。
 func (s *Store) ListServerViews() ([]ServerView, error) {
 	const q = `
-		SELECT s.id, s.name, s.host, s.port, s.username, s.host_key, s.group_name, s.tags, s.note,
+		SELECT s.id, s.name, s.host, s.port, s.username, s.host_key, s.group_name, s.node_role, s.tags, s.note,
 		       s.created_at, s.updated_at,
 		       CASE WHEN s.username <> '' AND s.password <> '' THEN 1 ELSE 0 END,
 		       i.id, i.status, i.score, i.started_at
@@ -297,7 +340,7 @@ func (s *Store) ListServerViews() ([]ServerView, error) {
 			lastID, lastScore  sql.NullInt64
 			lastStatus, lastAt sql.NullString
 		)
-		if err := rows.Scan(&v.ID, &v.Name, &v.Host, &v.Port, &v.Username, &v.HostKey, &v.Group, &v.Tags, &v.Note,
+		if err := rows.Scan(&v.ID, &v.Name, &v.Host, &v.Port, &v.Username, &v.HostKey, &v.Group, &v.NodeRole, &v.Tags, &v.Note,
 			&created, &updated, &configured, &lastID, &lastStatus, &lastScore, &lastAt); err != nil {
 			return nil, err
 		}

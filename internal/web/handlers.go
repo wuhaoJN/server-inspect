@@ -25,6 +25,7 @@ type serverInput struct {
 	Username     string `json:"username"`
 	Password     string `json:"password"`
 	Group        string `json:"group"`
+	NodeRole     string `json:"nodeRole"`
 	Tags         string `json:"tags"`
 	Note         string `json:"note"`
 	ServerID     int64  `json:"serverId"`
@@ -36,6 +37,7 @@ func (in *serverInput) normalize() error {
 	in.Host = strings.TrimSpace(in.Host)
 	in.Username = strings.TrimSpace(in.Username)
 	in.Group = strings.TrimSpace(in.Group)
+	in.NodeRole = strings.TrimSpace(in.NodeRole)
 	in.Tags = strings.TrimSpace(in.Tags)
 	in.Note = strings.TrimSpace(in.Note)
 	in.Host = strings.TrimPrefix(in.Host, "ssh://")
@@ -59,6 +61,8 @@ func (in *serverInput) normalize() error {
 		return errors.New("服务器名称不能超过 100 个字符")
 	case len(in.Group) > 50:
 		return errors.New("分组名称不能超过 50 个字符")
+	case len(in.NodeRole) > 50:
+		return errors.New("节点职责不能超过 50 个字符")
 	case len(in.Tags) > 200:
 		return errors.New("标签不能超过 200 个字符")
 	case len(in.Note) > 500:
@@ -97,7 +101,7 @@ func (s *Server) handleServerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	srv := &store.Server{
 		Name: in.Name, Host: in.Host, Port: in.Port, Username: in.Username,
-		PasswordEnc: enc, Group: in.Group, Tags: in.Tags, Note: in.Note,
+		PasswordEnc: enc, Group: in.Group, NodeRole: in.NodeRole, Tags: in.Tags, Note: in.Note,
 	}
 	if err := s.store.CreateServer(srv); err != nil {
 		writeFail(w, http.StatusInternalServerError, err.Error())
@@ -314,7 +318,7 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 
 	updated := &store.Server{
 		ID: id, Name: in.Name, Host: in.Host, Port: in.Port, Username: in.Username,
-		PasswordEnc: passwordEnc, HostKey: hostKey, Group: in.Group, Tags: in.Tags, Note: in.Note,
+		PasswordEnc: passwordEnc, HostKey: hostKey, Group: in.Group, NodeRole: in.NodeRole, Tags: in.Tags, Note: in.Note,
 	}
 	if err := s.store.UpdateServer(updated); err != nil {
 		writeFail(w, http.StatusInternalServerError, err.Error())
