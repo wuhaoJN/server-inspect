@@ -1,0 +1,259 @@
+package store
+
+import (
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestStoreServerAndInspection(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	srv := &Server{
+		Name: "测试服务器", Host: "10.0.0.1", Port: 22, Username: "root",
+		PasswordEnc: "cipher", Group: "测试", Tags: "a,b", Note: "备注",
+	}
+	if err := st.CreateServer(srv); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	if srv.ID == 0 {
+		t.Fatal("expected server id")
+	}
+
+	got, err := st.GetServer(srv.ID)
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if got.Name != srv.Name || got.PasswordEnc != "cipher" {
+		t.Fatalf("unexpected server: %#v", got)
+	}
+
+	if err := st.SetHostKey(srv.ID, "SHA256:abc"); err != nil {
+		t.Fatalf("SetHostKey: %v", err)
+	}
+
+	srv.Name = "改名"
+	if err := st.UpdateServer(srv); err != nil {
+		t.Fatalf("UpdateServer: %v", err)
+	}
+
+	started := time.Now().UTC().Add(-2 * time.Second)
+	rec := &Inspection{
+		ServerID: srv.ID, ServerName: srv.Name, Host: srv.Host, Status: "warning", Score: 88,
+		MetricsJSON: `{"load1":1.2}`, ReportJSON: `{"score":88}`,
+		StartedAt: started, FinishedAt: time.Now().UTC(), DurationMS: 2000,
+	}
+	if err := st.CreateInspection(rec); err != nil {
+		t.Fatalf("CreateInspection: %v", err)
+	}
+
+	views, err := st.ListServerViews()
+	if err != nil {
+		t.Fatalf("ListServerViews: %v", err)
+	}
+	if len(views) != 1 || views[0].LastInspectionID != rec.ID || views[0].LastScore != 88 {
+		t.Fatalf("unexpected views: %#v", views)
+	}
+	if !views[0].Configured {
+		t.Fatalf("server with username/password should be configured: %#v", views[0])
+	}
+
+	full, err := st.GetInspection(rec.ID)
+	if err != nil {
+		t.Fatalf("GetInspection: %v", err)
+	}
+	if full.ReportJSON != `{"score":88}` || full.Status != "warning" {
+		t.Fatalf("unexpected inspection: %#v", full)
+	}
+
+	items, err := st.ListInspections(InspectionFilter{ServerID: srv.ID, Limit: 10})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListInspections: %v %#v", err, items)
+	}
+	total, err := st.CountInspections(InspectionFilter{ServerID: srv.ID})
+	if err != nil || total != 1 {
+		t.Fatalf("CountInspections: %v %d", err, total)
+	}
+	if n, err := st.CountInspectionsSince(started.Add(-time.Minute)); err != nil || n != 1 {
+		t.Fatalf("CountInspectionsSince: %v %d", err, n)
+	}
+	if avg, err := st.AvgScoreSince(started.Add(-time.Minute)); err != nil || avg != 88 {
+		t.Fatalf("AvgScoreSince: %v %v", err, avg)
+	}
+	counts, err := st.StatusCountsSince(started.Add(-time.Minute))
+	if err != nil || counts["warning"] != 1 {
+		t.Fatalf("StatusCountsSince: %v %#v", err, counts)
+	}
+	recent, err := st.RecentInspections(5)
+	if err != nil || len(recent) != 1 {
+		t.Fatalf("RecentInspections: %v %#v", err, recent)
+	}
+
+	if err := st.DeleteInspection(rec.ID); err != nil {
+		t.Fatalf("DeleteInspection: %v", err)
+	}
+	if err := st.DeleteServer(srv.ID); err != nil {
+		t.Fatalf("DeleteServer: %v", err)
+	}
+	if _, err := st.GetServer(srv.ID); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestListServerViewsSortsByIP(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	servers := []*Server{
+		{Name: "web-150-10-a", Host: "192.168.150.10", Port: 22, Username: "root", PasswordEnc: "x"},
+		{Name: "web-150-2", Host: "192.168.150.2", Port: 22, Username: "root", PasswordEnc: "x"},
+		{Name: "core-10", Host: "10.0.0.5", Port: 22, Username: "root", PasswordEnc: "x"},
+		{Name: "hostname-node", Host: "db.internal", Port: 22, Username: "root", PasswordEnc: "x"},
+		{Name: "web-150-10-b", Host: "192.168.150.10", Port: 2222, Username: "root", PasswordEnc: "x"},
+		{Name: "v6", Host: "2001:db8::1", Port: 22, Username: "root", PasswordEnc: "x"},
+	}
+	if err := st.CreateServers(servers); err != nil {
+		t.Fatalf("CreateServers: %v", err)
+	}
+
+	views, err := st.ListServerViews()
+	if err != nil {
+		t.Fatalf("ListServerViews: %v", err)
+	}
+	got := make([]string, 0, len(views))
+	for _, v := range views {
+		item := v.Host
+		if v.Port != 22 {
+			item += ":" + strconv.Itoa(v.Port)
+		}
+		got = append(got, item)
+	}
+	want := []string{
+		"10.0.0.5",
+		"192.168.150.2",
+		"192.168.150.10",
+		"192.168.150.10:2222",
+		"2001:db8::1",
+		"db.internal",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("sort order = %#v, want %#v", got, want)
+	}
+}
+
+func TestStoreBulkCreatePendingServers(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	servers := []*Server{
+		{Name: "10.0.0.1", Host: "10.0.0.1", Port: 22, Group: "扫描发现"},
+		{Name: "10.0.0.2", Host: "10.0.0.2", Port: 2222, Group: "扫描发现"},
+	}
+	if err := st.CreateServers(servers); err != nil {
+		t.Fatalf("CreateServers: %v", err)
+	}
+	for _, sv := range servers {
+		if sv.ID == 0 {
+			t.Fatal("bulk create should set ids")
+		}
+	}
+
+	views, err := st.ListServerViews()
+	if err != nil || len(views) != 2 {
+		t.Fatalf("ListServerViews: %v %#v", err, views)
+	}
+	for _, v := range views {
+		if v.Configured {
+			t.Fatalf("bulk-created server should be pending: %#v", v)
+		}
+	}
+
+	servers[0].Username = "root"
+	servers[0].PasswordEnc = "cipher"
+	if err := st.UpdateServer(servers[0]); err != nil {
+		t.Fatalf("UpdateServer: %v", err)
+	}
+	views, err = st.ListServerViews()
+	if err != nil {
+		t.Fatalf("ListServerViews: %v", err)
+	}
+	configured := 0
+	for _, v := range views {
+		if v.Configured {
+			configured++
+		}
+	}
+	if configured != 1 {
+		t.Fatalf("configured count = %d, views = %#v", configured, views)
+	}
+}
+
+func TestCountInspectionsSinceSameSecond(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	records := []*Inspection{
+		{ServerID: 1, ServerName: "after", Host: "10.0.0.1", Status: "ok", Score: 90,
+			StartedAt: base.Add(500 * time.Millisecond), FinishedAt: base.Add(time.Second)},
+		{ServerID: 2, ServerName: "before", Host: "10.0.0.2", Status: "ok", Score: 80,
+			StartedAt: base.Add(-500 * time.Millisecond), FinishedAt: base},
+	}
+	for _, rec := range records {
+		if err := st.CreateInspection(rec); err != nil {
+			t.Fatalf("CreateInspection: %v", err)
+		}
+	}
+
+	n, err := st.CountInspectionsSince(base)
+	if err != nil {
+		t.Fatalf("CountInspectionsSince: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("count = %d, want 1 (same-second boundary)", n)
+	}
+}
+
+func TestStoreAdmin(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	created, err := st.EnsureAdmin("admin", "secret-pass")
+	if err != nil || !created {
+		t.Fatalf("EnsureAdmin: %v %v", err, created)
+	}
+	created, err = st.EnsureAdmin("admin", "another")
+	if err != nil || created {
+		t.Fatalf("second EnsureAdmin should not recreate: %v %v", err, created)
+	}
+	username, hash, err := st.AdminCredentials()
+	if err != nil || username != "admin" || hash == "" {
+		t.Fatalf("AdminCredentials: %v %q %q", err, username, hash)
+	}
+	if err := st.SetAdminPassword("admin", "new-pass"); err != nil {
+		t.Fatalf("SetAdminPassword: %v", err)
+	}
+}

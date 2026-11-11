@@ -1,0 +1,20 @@
+# 运行时数据（数据库、主密钥、WAL）
+/data/
+data/
+
+# 构建产物
+/server-inspect
+/server-inspect.exe
+/server-inspect-*
+*.exe
+/dist/
+
+# 测试与临时文件
+*.test
+*.out
+*.log
+coverage.out
+*.cpuprofile
+*.trace
+.DS_Store
+Thumbs.db

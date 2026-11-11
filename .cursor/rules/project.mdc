@@ -1,0 +1,15 @@
+---
+description: 服务器巡检系统开发规范（Go + SSH + SQLite + 内嵌前端）
+alwaysApply: true
+---
+
+完整规范：根目录 `AGENTS.md`；开发细则：`DEVELOPMENT.md`。
+
+- 巡检只读，不修改目标系统、不安装 Agent、不提权。
+- 不打印/提交密码、主密钥、Cookie。
+- 未获用户同意，不部署、不重启服务、不改防火墙。
+- 新增 API 必须有鉴权、输入校验、写操作 Origin 校验和测试。
+- 前端只改 `internal/web/static/`，动态内容用 `esc()`，修改后重新构建。
+- 修改主机/端口必须重新输入密码。
+- 完成前运行 `gofmt`、`go vet ./...`、`go test ./...`；`staticcheck` 未安装时用 `go run honnef.co/go/tools/cmd/staticcheck@latest ./...`。
+- 当前目录为本地 Git 仓库（`main`，无远程），动手前用 `git status` 确认工作区。

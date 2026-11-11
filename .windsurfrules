@@ -1,0 +1,10 @@
+本项目以根目录 AGENTS.md 为唯一 AI 编码规范，开始工作前必须先阅读；详细开发规范见 DEVELOPMENT.md，部署见 README.md，计划见 ROADMAP.md。
+
+核心约束：
+- 巡检命令只读，不修改目标系统、不安装 Agent、不提权。
+- 不记录/提交真实密码、主密钥、Cookie。
+- 未获用户明确同意，不部署、不重启服务、不改防火墙。
+- 修改主机/端口必须重新输入登录密码。
+- 前端只改 internal/web/static/，修改后重新构建二进制。
+- 完成后运行 go test ./...、go vet ./...；staticcheck 未安装时用 go run honnef.co/go/tools/cmd/staticcheck@latest ./...。
+- 当前目录为本地 Git 仓库（main，无远程），动手前用 git status 确认工作区。

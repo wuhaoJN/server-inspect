@@ -1,0 +1,34 @@
+[Unit]
+Description=Server Inspector (服务器巡检系统)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=inspect
+Group=inspect
+WorkingDirectory=/opt/server-inspect
+
+# 默认监听所有网卡，便于直接访问。
+# 若使用 Nginx/Caddy 反向代理，请改为：-addr 127.0.0.1:8080，并追加 -cookie-secure
+ExecStart=/opt/server-inspect/server-inspect -addr 0.0.0.0:8080 -data /var/lib/server-inspect
+
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+LimitNOFILE=65535
+
+# 基础加固（兼容 CentOS 7 / systemd 219）。
+# systemd 229 以下会忽略 NoNewPrivileges；231 以下不支持 ReadWritePaths。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+# systemd >= 231 可改为更严格的配置：
+# ProtectSystem=strict
+# ReadWritePaths=/var/lib/server-inspect
+
+[Install]
+WantedBy=multi-user.target

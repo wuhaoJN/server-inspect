@@ -1,0 +1,19 @@
+# 统一使用 LF，避免 Linux 上的 shell 脚本 / systemd 单元出现 CRLF 问题
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.service text eol=lf
+*.go text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+
+*.exe binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
