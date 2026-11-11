@@ -69,6 +69,56 @@ var schema = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
+	`CREATE TABLE IF NOT EXISTS batches (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		trigger_type   TEXT    NOT NULL DEFAULT 'manual',
+		schedule_id    INTEGER NOT NULL DEFAULT 0,
+		name           TEXT    NOT NULL DEFAULT '',
+		started_at     TEXT    NOT NULL,
+		finished_at    TEXT    NOT NULL,
+		server_count   INTEGER NOT NULL DEFAULT 0,
+		ok_count       INTEGER NOT NULL DEFAULT 0,
+		warning_count  INTEGER NOT NULL DEFAULT 0,
+		critical_count INTEGER NOT NULL DEFAULT 0,
+		error_count    INTEGER NOT NULL DEFAULT 0,
+		issue_count    INTEGER NOT NULL DEFAULT 0,
+		avg_score      REAL    NOT NULL DEFAULT 0,
+		skipped_count  INTEGER NOT NULL DEFAULT 0,
+		elapsed_ms     INTEGER NOT NULL DEFAULT 0,
+		summary_json   TEXT    NOT NULL DEFAULT '',
+		created_at     TEXT    NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_batches_started ON batches(started_at DESC)`,
+	`CREATE TABLE IF NOT EXISTS batch_inspections (
+		batch_id      INTEGER NOT NULL,
+		inspection_id INTEGER NOT NULL,
+		PRIMARY KEY (batch_id, inspection_id)
+	)`,
+	`CREATE TABLE IF NOT EXISTS schedules (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		name             TEXT    NOT NULL,
+		enabled          INTEGER NOT NULL DEFAULT 1,
+		scope_type       TEXT    NOT NULL DEFAULT 'all',
+		scope_value      TEXT    NOT NULL DEFAULT '',
+		freq_type        TEXT    NOT NULL DEFAULT 'daily',
+		interval_minutes INTEGER NOT NULL DEFAULT 60,
+		at_hour          INTEGER NOT NULL DEFAULT 2,
+		at_minute        INTEGER NOT NULL DEFAULT 0,
+		weekday          INTEGER NOT NULL DEFAULT 0,
+		last_run_at      TEXT    NOT NULL DEFAULT '',
+		next_run_at      TEXT    NOT NULL DEFAULT '',
+		last_batch_id    INTEGER NOT NULL DEFAULT 0,
+		last_status      TEXT    NOT NULL DEFAULT '',
+		last_error       TEXT    NOT NULL DEFAULT '',
+		created_at       TEXT    NOT NULL,
+		updated_at       TEXT    NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_schedules_next ON schedules(enabled, next_run_at)`,
+	`CREATE TABLE IF NOT EXISTS schedule_servers (
+		schedule_id INTEGER NOT NULL,
+		server_id   INTEGER NOT NULL,
+		PRIMARY KEY (schedule_id, server_id)
+	)`,
 }
 
 // Open 打开（必要时创建）SQLite 数据库并完成建表。

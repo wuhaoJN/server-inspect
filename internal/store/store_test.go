@@ -286,6 +286,109 @@ func TestOpenMigratesNodeRole(t *testing.T) {
 	}
 }
 
+func TestStoreBatches(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC()
+	b := &Batch{
+		Trigger: "manual", Name: "手动批量",
+		StartedAt: now.Add(-10 * time.Second), FinishedAt: now,
+		ServerCount: 2, OKCount: 1, WarningCount: 1, AvgScore: 80,
+		Skipped: 1, ElapsedMS: 10000, SummaryJSON: `{"counts":{"ok":1,"warning":1}}`,
+	}
+	if err := st.CreateBatch(b, []int64{10, 11, 11}); err != nil {
+		t.Fatalf("CreateBatch: %v", err)
+	}
+	if b.ID == 0 {
+		t.Fatal("batch id not set")
+	}
+	got, err := st.GetBatch(b.ID)
+	if err != nil {
+		t.Fatalf("GetBatch: %v", err)
+	}
+	if got.SummaryJSON != b.SummaryJSON || got.ServerCount != 2 || got.Skipped != 1 {
+		t.Fatalf("unexpected batch: %#v", got)
+	}
+	list, err := st.ListBatches(10, 0)
+	if err != nil || len(list) != 1 || list[0].ID != b.ID {
+		t.Fatalf("ListBatches: %v %#v", err, list)
+	}
+	if n, err := st.CountBatches(); err != nil || n != 1 {
+		t.Fatalf("CountBatches: %v %d", err, n)
+	}
+	ids, err := st.BatchInspectionIDs(b.ID)
+	if err != nil || len(ids) != 2 || ids[0] != 10 || ids[1] != 11 {
+		t.Fatalf("BatchInspectionIDs: %v %#v", err, ids)
+	}
+}
+
+func TestStoreSchedules(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC()
+	past := now.Add(-time.Hour)
+	next := now.Add(time.Hour)
+	sch := &Schedule{
+		Name: "每日巡检", Enabled: true, ScopeType: "custom", ScopeValue: "",
+		FreqType: "daily", AtHour: 2, AtMinute: 0, NextRunAt: &next,
+	}
+	if err := st.CreateSchedule(sch); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	if sch.ID == 0 {
+		t.Fatal("schedule id not set")
+	}
+	if err := st.SetScheduleServers(sch.ID, []int64{3, 1, 3}); err != nil {
+		t.Fatalf("SetScheduleServers: %v", err)
+	}
+	ids, err := st.GetScheduleServerIDs(sch.ID)
+	if err != nil || len(ids) != 2 || ids[0] != 1 || ids[1] != 3 {
+		t.Fatalf("GetScheduleServerIDs: %v %#v", err, ids)
+	}
+
+	// 到期查询
+	sch.NextRunAt = &past
+	if err := st.UpdateSchedule(sch); err != nil {
+		t.Fatalf("UpdateSchedule: %v", err)
+	}
+	due, err := st.ListDueSchedules(now)
+	if err != nil || len(due) != 1 || due[0].ID != sch.ID {
+		t.Fatalf("ListDueSchedules: %v %#v", err, due)
+	}
+
+	if err := st.UpdateScheduleRun(sch.ID, now, next, 99, "ok", ""); err != nil {
+		t.Fatalf("UpdateScheduleRun: %v", err)
+	}
+	got, err := st.GetSchedule(sch.ID)
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if got.LastBatchID != 99 || got.LastStatus != "ok" || got.NextRunAt == nil || !got.NextRunAt.After(now) {
+		t.Fatalf("unexpected schedule: %#v", got)
+	}
+	due, err = st.ListDueSchedules(now)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("expected no due schedules: %v %#v", err, due)
+	}
+
+	if err := st.DeleteSchedule(sch.ID); err != nil {
+		t.Fatalf("DeleteSchedule: %v", err)
+	}
+	if _, err := st.GetSchedule(sch.ID); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestStoreAdmin(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(filepath.Join(dir, "test.db"))

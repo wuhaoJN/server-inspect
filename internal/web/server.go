@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"serverinspect/internal/inspect"
+	"serverinspect/internal/runner"
+	"serverinspect/internal/scheduler"
 	"serverinspect/internal/secret"
 	"serverinspect/internal/store"
 )
@@ -37,16 +39,18 @@ type Config struct {
 
 // Server 承载 HTTP 路由与依赖。
 type Server struct {
-	store   *store.Store
-	cipher  *secret.Cipher
-	cfg     Config
-	mux     *http.ServeMux
-	log     *slog.Logger
-	scanSem chan struct{}
+	store     *store.Store
+	cipher    *secret.Cipher
+	cfg       Config
+	mux       *http.ServeMux
+	log       *slog.Logger
+	runner    *runner.Runner
+	scheduler *scheduler.Scheduler
+	scanSem   chan struct{}
 }
 
 // New 构造 Web 服务。
-func New(st *store.Store, cipher *secret.Cipher, cfg Config, logger *slog.Logger) *Server {
+func New(st *store.Store, cipher *secret.Cipher, cfg Config, logger *slog.Logger, run *runner.Runner, sched *scheduler.Scheduler) *Server {
 	if cfg.SessionTTL <= 0 {
 		cfg.SessionTTL = 12 * time.Hour
 	}
@@ -63,12 +67,14 @@ func New(st *store.Store, cipher *secret.Cipher, cfg Config, logger *slog.Logger
 		cfg.Version = "1.0.0"
 	}
 	s := &Server{
-		store:   st,
-		cipher:  cipher,
-		cfg:     cfg,
-		mux:     http.NewServeMux(),
-		log:     logger,
-		scanSem: make(chan struct{}, 1),
+		store:     st,
+		cipher:    cipher,
+		cfg:       cfg,
+		mux:       http.NewServeMux(),
+		log:       logger,
+		runner:    run,
+		scheduler: sched,
+		scanSem:   make(chan struct{}, 1),
 	}
 	s.routes()
 	return s
@@ -88,6 +94,8 @@ func (s *Server) routes() {
 	})
 
 	s.mux.HandleFunc("GET /api/servers", s.authed(s.handleServersList))
+	s.mux.HandleFunc("GET /api/servers/{id}", s.authed(s.handleServerDetail))
+	s.mux.HandleFunc("GET /api/servers/{id}/trends", s.authed(s.handleServerTrends))
 	s.mux.HandleFunc("POST /api/servers", s.authed(s.handleServerCreate))
 	s.mux.HandleFunc("POST /api/servers/test", s.authed(s.handleServerTest))
 	s.mux.HandleFunc("POST /api/servers/bulk", s.authed(s.handleServerBulkCreate))
@@ -99,7 +107,18 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /api/inspections", s.authed(s.handleInspectionsList))
 	s.mux.HandleFunc("GET /api/inspections/{id}", s.authed(s.handleInspectionDetail))
+	s.mux.HandleFunc("GET /api/inspections/{id}/compare", s.authed(s.handleInspectionCompare))
 	s.mux.HandleFunc("DELETE /api/inspections/{id}", s.authed(s.handleInspectionDelete))
+
+	s.mux.HandleFunc("GET /api/batches", s.authed(s.handleBatchesList))
+	s.mux.HandleFunc("POST /api/batches", s.authed(s.handleBatchCreate))
+	s.mux.HandleFunc("GET /api/batches/{id}", s.authed(s.handleBatchDetail))
+
+	s.mux.HandleFunc("GET /api/schedules", s.authed(s.handleSchedulesList))
+	s.mux.HandleFunc("POST /api/schedules", s.authed(s.handleScheduleCreate))
+	s.mux.HandleFunc("PUT /api/schedules/{id}", s.authed(s.handleScheduleUpdate))
+	s.mux.HandleFunc("DELETE /api/schedules/{id}", s.authed(s.handleScheduleDelete))
+	s.mux.HandleFunc("POST /api/schedules/{id}/run", s.authed(s.handleScheduleRun))
 
 	sub, err := fs.Sub(staticFiles, "static")
 	if err != nil {

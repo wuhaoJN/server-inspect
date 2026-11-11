@@ -10,8 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"serverinspect/internal/batch"
+	"serverinspect/internal/compare"
 	"serverinspect/internal/inspect"
 	"serverinspect/internal/netscan"
+	"serverinspect/internal/scheduler"
 	"serverinspect/internal/sshx"
 	"serverinspect/internal/store"
 )
@@ -500,100 +503,12 @@ func (s *Server) handleServerInspect(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.InspectTimeout)
 	defer cancel()
-	rec, report, err := s.executeInspection(ctx, srv)
+	rec, report, err := s.runner.Run(ctx, srv)
 	if err != nil {
 		writeFail(w, http.StatusInternalServerError, "巡检执行失败: "+err.Error())
 		return
 	}
 	writeOK(w, map[string]any{"inspection": rec, "report": report})
-}
-
-func (s *Server) executeInspection(ctx context.Context, srv *store.Server) (*store.Inspection, *inspect.Report, error) {
-	started := time.Now().UTC()
-	password, err := s.cipher.Decrypt(srv.PasswordEnc)
-	if err != nil {
-		return nil, nil, fmt.Errorf("解密登录口令失败: %w", err)
-	}
-	knownHostKey := srv.HostKey
-	if s.cfg.SkipHostKeyCheck {
-		knownHostKey = ""
-	}
-	res, err := sshx.Dial(sshx.DialOptions{
-		Host: srv.Host, Port: srv.Port, Username: srv.Username, Password: password,
-		Timeout:      s.cfg.DialTimeout,
-		KnownHostKey: knownHostKey,
-		TrustHostKey: s.cfg.SkipHostKeyCheck,
-	})
-	if err != nil {
-		rec, saveErr := s.recordFailedInspection(srv, started, err.Error())
-		if saveErr != nil {
-			return nil, nil, saveErr
-		}
-		return rec, nil, nil
-	}
-	defer res.Client.Close()
-
-	if res.Fingerprint != "" && srv.HostKey == "" {
-		if err := s.store.SetHostKey(srv.ID, res.Fingerprint); err == nil {
-			s.log.Info("记录主机密钥指纹", "server", srv.Name, "fingerprint", res.Fingerprint)
-		}
-	}
-
-	report, runErr := inspect.Run(ctx, res.Client, s.cfg.InspectOptions)
-	if runErr != nil {
-		rec, saveErr := s.recordFailedInspection(srv, started, runErr.Error())
-		if saveErr != nil {
-			return nil, nil, saveErr
-		}
-		return rec, nil, nil
-	}
-	report.ServerName = srv.Name
-	report.Host = srv.Host
-
-	metricsJSON, _ := json.Marshal(report.Metrics)
-	reportJSON, err := json.Marshal(report)
-	if err != nil {
-		return nil, nil, fmt.Errorf("序列化巡检报告失败: %w", err)
-	}
-	rec := &store.Inspection{
-		ServerID:    srv.ID,
-		ServerName:  srv.Name,
-		Host:        srv.Host,
-		Status:      string(report.Overall),
-		Score:       report.Score,
-		MetricsJSON: string(metricsJSON),
-		ReportJSON:  string(reportJSON),
-		StartedAt:   report.StartedAt,
-		FinishedAt:  report.FinishedAt,
-		DurationMS:  report.DurationMS,
-	}
-	if err := s.store.CreateInspection(rec); err != nil {
-		return nil, nil, err
-	}
-	s.log.Info("巡检完成", "server", srv.Name, "status", rec.Status, "score", rec.Score,
-		"durationMs", rec.DurationMS)
-	return rec, report, nil
-}
-
-func (s *Server) recordFailedInspection(srv *store.Server, started time.Time, message string) (*store.Inspection, error) {
-	finished := time.Now().UTC()
-	rec := &store.Inspection{
-		ServerID:    srv.ID,
-		ServerName:  srv.Name,
-		Host:        srv.Host,
-		Status:      "error",
-		Error:       message,
-		MetricsJSON: "{}",
-		StartedAt:   started,
-		FinishedAt:  finished,
-		DurationMS:  finished.Sub(started).Milliseconds(),
-	}
-	if err := s.store.CreateInspection(rec); err != nil {
-		s.log.Error("保存失败巡检记录出错", "server", srv.Name, "error", err)
-		return nil, fmt.Errorf("保存失败巡检记录出错: %w", err)
-	}
-	s.log.Warn("巡检失败", "server", srv.Name, "error", message)
-	return rec, nil
 }
 
 // ---------- 巡检记录 / 概览 ----------
@@ -712,4 +627,541 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		s.log.Warn("查询最近巡检记录失败", "error", err)
 	}
 	writeOK(w, data)
+}
+
+// ---------- 服务器详情 / 趋势 ----------
+
+func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "服务器 ID 无效")
+		return
+	}
+	view, err := s.store.GetServerView(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeFail(w, http.StatusNotFound, "服务器不存在")
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeOK(w, view)
+}
+
+type trendPoint struct {
+	ID          int64     `json:"id"`
+	StartedAt   time.Time `json:"startedAt"`
+	Status      string    `json:"status"`
+	Score       int       `json:"score"`
+	CPUPercent  float64   `json:"cpuPercent"`
+	MemPercent  float64   `json:"memPercent"`
+	DiskPercent float64   `json:"diskPercent"`
+	Load1       float64   `json:"load1"`
+}
+
+func (s *Server) handleServerTrends(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "服务器 ID 无效")
+		return
+	}
+	if _, err := s.store.GetServer(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeFail(w, http.StatusNotFound, "服务器不存在")
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	days := 30
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			days = n
+		}
+	}
+	if days < 1 {
+		days = 1
+	}
+	if days > 365 {
+		days = 365
+	}
+	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	points, err := s.store.ListTrendPoints(id, since, 1000)
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "查询趋势失败: "+err.Error())
+		return
+	}
+	out := make([]trendPoint, 0, len(points))
+	for _, p := range points {
+		var metrics inspect.Metrics
+		if p.MetricsJSON != "" {
+			_ = json.Unmarshal([]byte(p.MetricsJSON), &metrics)
+		}
+		out = append(out, trendPoint{
+			ID: p.ID, StartedAt: p.StartedAt, Status: p.Status, Score: p.Score,
+			CPUPercent: metrics.CPUPercent, MemPercent: metrics.MemPercent,
+			DiskPercent: metrics.DiskPercent, Load1: metrics.Load1,
+		})
+	}
+	writeOK(w, map[string]any{"days": days, "points": out})
+}
+
+func (s *Server) handleInspectionCompare(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "巡检记录 ID 无效")
+		return
+	}
+	current, err := s.store.GetInspection(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeFail(w, http.StatusNotFound, "巡检记录不存在")
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if current.ReportJSON == "" {
+		writeOK(w, map[string]any{
+			"available": false, "currentId": current.ID,
+			"currentStatus": current.Status, "currentScore": current.Score,
+		})
+		return
+	}
+	var currentReport inspect.Report
+	if err := json.Unmarshal([]byte(current.ReportJSON), &currentReport); err != nil {
+		writeFail(w, http.StatusInternalServerError, "解析当前巡检报告失败")
+		return
+	}
+	previous, err := s.store.PreviousInspection(current.ServerID, current.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeOK(w, map[string]any{
+				"available": false, "currentId": current.ID,
+				"currentStatus": current.Status, "currentScore": current.Score,
+			})
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var previousReport inspect.Report
+	if err := json.Unmarshal([]byte(previous.ReportJSON), &previousReport); err != nil {
+		writeOK(w, map[string]any{
+			"available": false, "currentId": current.ID,
+			"currentStatus": current.Status, "currentScore": current.Score,
+		})
+		return
+	}
+	writeOK(w, compare.Build(current, currentReport, previous, previousReport))
+}
+
+// ---------- 批量记录 ----------
+
+const maxBatchItems = 4096
+
+type batchCreateInput struct {
+	InspectionIDs []int64         `json:"inspectionIds"`
+	Failures      []batch.Failure `json:"failures"`
+	Skipped       int             `json:"skipped"`
+	ElapsedMS     int64           `json:"elapsedMs"`
+}
+
+func (s *Server) handleBatchesList(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	items, err := s.store.ListBatches(limit, offset)
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "查询批量记录失败: "+err.Error())
+		return
+	}
+	total, err := s.store.CountBatches()
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "统计批量记录失败: "+err.Error())
+		return
+	}
+	writeOK(w, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
+}
+
+func (s *Server) handleBatchCreate(w http.ResponseWriter, r *http.Request) {
+	var req batchCreateInput
+	if err := readJSON(r, &req); err != nil {
+		writeFail(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if len(req.InspectionIDs)+len(req.Failures) == 0 {
+		writeFail(w, http.StatusBadRequest, "批量记录不能为空")
+		return
+	}
+	if len(req.InspectionIDs)+len(req.Failures) > maxBatchItems {
+		writeFail(w, http.StatusBadRequest, fmt.Sprintf("单次批量记录最多 %d 台", maxBatchItems))
+		return
+	}
+	if req.Skipped < 0 {
+		req.Skipped = 0
+	}
+	if req.ElapsedMS < 0 {
+		req.ElapsedMS = 0
+	}
+
+	records := make([]*store.Inspection, 0, len(req.InspectionIDs))
+	ids := make([]int64, 0, len(req.InspectionIDs))
+	seen := map[int64]bool{}
+	for _, id := range req.InspectionIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		rec, err := s.store.GetInspection(id)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeFail(w, http.StatusBadRequest, fmt.Sprintf("巡检记录 %d 不存在", id))
+				return
+			}
+			writeFail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		records = append(records, rec)
+		ids = append(ids, id)
+	}
+
+	servers, err := s.store.ListServers()
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	serverMap := make(map[int64]*store.Server, len(servers))
+	for i := range servers {
+		serverMap[servers[i].ID] = &servers[i]
+	}
+
+	started := time.Now().UTC()
+	finished := time.Now().UTC()
+	if len(records) > 0 {
+		started = records[0].StartedAt
+		finished = records[0].FinishedAt
+		for _, rec := range records[1:] {
+			if rec.StartedAt.Before(started) {
+				started = rec.StartedAt
+			}
+			if rec.FinishedAt.After(finished) {
+				finished = rec.FinishedAt
+			}
+		}
+	}
+	if req.ElapsedMS == 0 {
+		req.ElapsedMS = finished.Sub(started).Milliseconds()
+		if req.ElapsedMS < 0 {
+			req.ElapsedMS = 0
+		}
+	}
+
+	summary := batch.Build(records, serverMap, req.Failures, req.Skipped, req.ElapsedMS)
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "生成批量分析失败")
+		return
+	}
+	b := &store.Batch{
+		Trigger:       "manual",
+		Name:          "手动批量",
+		StartedAt:     started,
+		FinishedAt:    finished,
+		ServerCount:   len(records) + len(req.Failures),
+		OKCount:       summary.Counts["ok"],
+		WarningCount:  summary.Counts["warning"],
+		CriticalCount: summary.Counts["critical"],
+		ErrorCount:    summary.Counts["error"],
+		IssueCount:    summary.IssueCount,
+		AvgScore:      summary.AvgScore,
+		Skipped:       req.Skipped,
+		ElapsedMS:     req.ElapsedMS,
+		SummaryJSON:   string(summaryJSON),
+	}
+	if err := s.store.CreateBatch(b, ids); err != nil {
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.log.Info("保存批量巡检记录", "batch", b.ID, "servers", b.ServerCount, "issues", b.IssueCount)
+	writeOK(w, map[string]any{"batch": b, "summary": json.RawMessage(summaryJSON)})
+}
+
+func (s *Server) handleBatchDetail(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "批量记录 ID 无效")
+		return
+	}
+	b, err := s.store.GetBatch(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeFail(w, http.StatusNotFound, "批量记录不存在")
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	summary := json.RawMessage(b.SummaryJSON)
+	if len(summary) == 0 {
+		summary = json.RawMessage("{}")
+	}
+	writeOK(w, map[string]any{"batch": b, "summary": summary})
+}
+
+// ---------- 定时计划 ----------
+
+type scheduleInput struct {
+	Name            string  `json:"name"`
+	Enabled         bool    `json:"enabled"`
+	ScopeType       string  `json:"scopeType"`
+	ScopeValue      string  `json:"scopeValue"`
+	FreqType        string  `json:"freqType"`
+	IntervalMinutes int     `json:"intervalMinutes"`
+	AtHour          int     `json:"atHour"`
+	AtMinute        int     `json:"atMinute"`
+	Weekday         int     `json:"weekday"`
+	ServerIDs       []int64 `json:"serverIds"`
+}
+
+func (in *scheduleInput) normalize() error {
+	in.Name = strings.TrimSpace(in.Name)
+	in.ScopeType = strings.ToLower(strings.TrimSpace(in.ScopeType))
+	in.ScopeValue = strings.TrimSpace(in.ScopeValue)
+	in.FreqType = strings.ToLower(strings.TrimSpace(in.FreqType))
+	switch {
+	case in.Name == "":
+		return errors.New("计划名称不能为空")
+	case len(in.Name) > 100:
+		return errors.New("计划名称不能超过 100 个字符")
+	}
+	switch in.ScopeType {
+	case "all":
+		in.ScopeValue = ""
+	case "group":
+		if in.ScopeValue == "" {
+			return errors.New("请选择或填写分组")
+		}
+		if len(in.ScopeValue) > 50 {
+			return errors.New("分组名称不能超过 50 个字符")
+		}
+	case "custom":
+		if len(in.ServerIDs) == 0 {
+			return errors.New("请选择至少一台服务器")
+		}
+		if len(in.ServerIDs) > maxBatchItems {
+			return errors.New("自选服务器数量过多")
+		}
+		in.ScopeValue = ""
+	default:
+		return errors.New("计划范围无效")
+	}
+	switch in.FreqType {
+	case "interval":
+		if in.IntervalMinutes < 5 || in.IntervalMinutes > 10080 {
+			return errors.New("执行间隔必须在 5-10080 分钟之间")
+		}
+	case "daily":
+		if in.AtHour < 0 || in.AtHour > 23 || in.AtMinute < 0 || in.AtMinute > 59 {
+			return errors.New("每天执行时间无效")
+		}
+	case "weekly":
+		if in.Weekday < 0 || in.Weekday > 6 || in.AtHour < 0 || in.AtHour > 23 || in.AtMinute < 0 || in.AtMinute > 59 {
+			return errors.New("每周执行时间无效")
+		}
+	default:
+		return errors.New("执行频率无效")
+	}
+	return nil
+}
+
+func (s *Server) scheduleTargetCount(sch *store.Schedule) int {
+	if s.scheduler == nil {
+		return 0
+	}
+	targets, err := s.scheduler.Targets(sch)
+	if err != nil {
+		return 0
+	}
+	return len(targets)
+}
+
+func (s *Server) handleSchedulesList(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.store.ListSchedules()
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, "查询定时计划失败: "+err.Error())
+		return
+	}
+	for i := range items {
+		if items[i].ScopeType == "custom" {
+			ids, err := s.store.GetScheduleServerIDs(items[i].ID)
+			if err == nil {
+				items[i].ServerIDs = ids
+			}
+		}
+		items[i].TargetCount = s.scheduleTargetCount(&items[i])
+	}
+	writeOK(w, items)
+}
+
+func (s *Server) handleScheduleCreate(w http.ResponseWriter, r *http.Request) {
+	var in scheduleInput
+	if err := readJSON(r, &in); err != nil {
+		writeFail(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := in.normalize(); err != nil {
+		writeFail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.validateScheduleServers(in.ServerIDs); err != nil {
+		writeFail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sch := &store.Schedule{
+		Name: in.Name, Enabled: in.Enabled, ScopeType: in.ScopeType, ScopeValue: in.ScopeValue,
+		FreqType: in.FreqType, IntervalMinutes: in.IntervalMinutes, AtHour: in.AtHour,
+		AtMinute: in.AtMinute, Weekday: in.Weekday, ServerIDs: in.ServerIDs,
+	}
+	next := scheduler.NextRun(sch, time.Now())
+	sch.NextRunAt = &next
+	if err := s.store.CreateSchedule(sch); err != nil {
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if in.ScopeType == "custom" {
+		if err := s.store.SetScheduleServers(sch.ID, in.ServerIDs); err != nil {
+			_ = s.store.DeleteSchedule(sch.ID)
+			writeFail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	sch.TargetCount = s.scheduleTargetCount(sch)
+	s.log.Info("创建定时计划", "id", sch.ID, "name", sch.Name, "next", sch.NextRunAt)
+	writeOK(w, sch)
+}
+
+func (s *Server) handleScheduleUpdate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "计划 ID 无效")
+		return
+	}
+	var in scheduleInput
+	if err := readJSON(r, &in); err != nil {
+		writeFail(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := in.normalize(); err != nil {
+		writeFail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.validateScheduleServers(in.ServerIDs); err != nil {
+		writeFail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sch, err := s.store.GetSchedule(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeFail(w, http.StatusNotFound, "定时计划不存在")
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sch.Name = in.Name
+	sch.Enabled = in.Enabled
+	sch.ScopeType = in.ScopeType
+	sch.ScopeValue = in.ScopeValue
+	sch.FreqType = in.FreqType
+	sch.IntervalMinutes = in.IntervalMinutes
+	sch.AtHour = in.AtHour
+	sch.AtMinute = in.AtMinute
+	sch.Weekday = in.Weekday
+	sch.ServerIDs = in.ServerIDs
+	next := scheduler.NextRun(sch, time.Now())
+	sch.NextRunAt = &next
+	if err := s.store.UpdateSchedule(sch); err != nil {
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.SetScheduleServers(sch.ID, in.ServerIDs); err != nil {
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sch.TargetCount = s.scheduleTargetCount(sch)
+	writeOK(w, sch)
+}
+
+func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "计划 ID 无效")
+		return
+	}
+	if err := s.store.DeleteSchedule(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeFail(w, http.StatusNotFound, "定时计划不存在")
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.log.Info("删除定时计划", "id", id)
+	writeOK(w, nil)
+}
+
+func (s *Server) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "计划 ID 无效")
+		return
+	}
+	if s.scheduler == nil {
+		writeFail(w, http.StatusInternalServerError, "定时任务服务未初始化")
+		return
+	}
+	rec, err := s.scheduler.RunNow(r.Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, scheduler.ErrAlreadyRunning):
+			writeFail(w, http.StatusConflict, err.Error())
+		case errors.Is(err, scheduler.ErrNoTargets):
+			writeFail(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, store.ErrNotFound):
+			writeFail(w, http.StatusNotFound, "定时计划不存在")
+		default:
+			writeFail(w, http.StatusInternalServerError, "执行定时计划失败: "+err.Error())
+		}
+		return
+	}
+	summary := json.RawMessage(rec.SummaryJSON)
+	if len(summary) == 0 {
+		summary = json.RawMessage("{}")
+	}
+	writeOK(w, map[string]any{"batch": rec, "summary": summary})
+}
+
+func (s *Server) validateScheduleServers(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	servers, err := s.store.ListServers()
+	if err != nil {
+		return err
+	}
+	exists := make(map[int64]bool, len(servers))
+	for i := range servers {
+		exists[servers[i].ID] = true
+	}
+	for _, id := range ids {
+		if id <= 0 || !exists[id] {
+			return fmt.Errorf("服务器 %d 不存在", id)
+		}
+	}
+	return nil
 }

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"serverinspect/internal/inspect"
+	"serverinspect/internal/runner"
+	"serverinspect/internal/scheduler"
 	"serverinspect/internal/secret"
 	"serverinspect/internal/store"
 	"serverinspect/internal/web"
@@ -43,6 +45,12 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	run := runner.New(st, cipher, runner.Config{
+		DialTimeout:    2 * time.Second,
+		InspectOptions: inspect.DefaultOptions(),
+		Concurrency:    2,
+	}, logger)
+	sched := scheduler.New(st, run, logger, time.Hour)
 	handler := web.New(st, cipher, web.Config{
 		Version:        "test",
 		SessionSecret:  secret.DeriveKey(key, "session-token"),
@@ -50,7 +58,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		DialTimeout:    2 * time.Second,
 		InspectTimeout: 5 * time.Second,
 		InspectOptions: inspect.DefaultOptions(),
-	}, logger).Handler()
+	}, logger, run, sched).Handler()
 	hs := httptest.NewServer(handler)
 	t.Cleanup(func() {
 		hs.Close()

@@ -29,9 +29,13 @@
 .
 ├── main.go                     # 配置、启动、优雅退出
 ├── internal/
+│   ├── batch/                  # 批量结果聚合与分析摘要
+│   ├── compare/                # 相邻两次报告对比
 │   ├── console/                # 终端编码适配（Windows UTF-8）
 │   ├── inspect/                # 巡检引擎、命令、解析器、报告、评分
 │   ├── netscan/                # IPv4 网段扫描
+│   ├── runner/                 # 单台/批量巡检执行与持久化
+│   ├── scheduler/              # 定时计划调度与下次执行时间
 │   ├── secret/                 # AES-GCM、bcrypt、随机口令/令牌
 │   ├── sshx/                   # SSH 连接、主机指纹、命令执行
 │   ├── store/                  # SQLite 持久化
@@ -47,8 +51,10 @@
 依赖方向（禁止反向依赖）：
 
 ```text
-main → web → (store, sshx, inspect, netscan, secret)
-main → (store, secret, web, inspect)
+main → web → (store, sshx, inspect, netscan, runner, scheduler, batch, compare, secret)
+main → (store, secret, web, inspect, runner, scheduler)
+runner → (store, inspect, sshx, secret, batch)
+scheduler → (store, runner)
 inspect → 标准库 + Runner 接口（不依赖 sshx/web）
 sshx   → golang.org/x/crypto/ssh
 store  → modernc.org/sqlite、secret（仅 bcrypt 哈希）
@@ -300,13 +306,13 @@ go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ### 11.1 版本
 
 - 版本号在 `main.version`，构建时通过 `-X main.version=` 注入。
-- 功能修复/新增后递增版本（示例：1.0.6 → 1.0.7）。
+- 功能修复/新增后递增版本（示例：1.0.7 → 1.0.8）。
 
 ### 11.2 构建
 
 ```bash
 ./release.sh                 # Linux amd64 + arm64 → dist/
-VERSION=1.0.7 ./release.sh   # 指定版本
+VERSION=1.0.8 ./release.sh   # 指定版本
 ```
 
 发布包包含：

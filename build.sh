@@ -2,7 +2,7 @@
 # 构建 Linux/macOS 可执行文件（纯 Go，无 CGO）
 set -eu
 
-VERSION="${VERSION:-1.0.7}"
+VERSION="${VERSION:-1.0.8}"
 OUTPUT="${OUTPUT:-server-inspect}"
 
 echo "==> 正在构建 ${OUTPUT} (version ${VERSION}) ..."

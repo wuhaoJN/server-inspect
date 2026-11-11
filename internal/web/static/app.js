@@ -14,6 +14,8 @@ const state = {
   route: { name: 'dashboard', id: '' },
   serverQuery: '',
   selected: new Set(),
+  schedules: [],
+  serverDetail: null,
   inspectionFilter: { serverId: '', status: '', offset: 0, limit: 20, total: 0, items: [] },
 };
 
@@ -373,6 +375,8 @@ function renderShell() {
         <a href="#/dashboard" data-nav="dashboard"><span>▦</span>仪表盘</a>
         <a href="#/servers" data-nav="servers"><span>▤</span>服务器</a>
         <a href="#/inspections" data-nav="inspections"><span>≣</span>巡检记录</a>
+        <a href="#/batches" data-nav="batches"><span>▥</span>批量记录</a>
+        <a href="#/schedules" data-nav="schedules"><span>◷</span>定时任务</a>
       </nav>
       <div class="sidebar-foot"><span class="dot"></span> v${esc(state.version || '1.0.0')}</div>
     </aside>
@@ -416,19 +420,26 @@ function onRoute() {
 
   const meta = (page === 'inspections' && id)
     ? ['巡检详情', '完整巡检报告']
-    : {
-        dashboard: ['仪表盘', '全局巡检概览与服务器健康状态'],
-        servers: ['服务器管理', '纳管 Linux 服务器并执行非侵入式巡检'],
-        inspections: ['巡检记录', '查看历史巡检结果与健康评分'],
-      }[page] || ['巡检详情', '完整巡检报告'];
+    : (page === 'servers' && id)
+      ? ['服务器详情', '资产信息、最新巡检、趋势与历史']
+      : {
+          dashboard: ['仪表盘', '全局巡检概览与服务器健康状态'],
+          servers: ['服务器管理', '纳管 Linux 服务器并执行非侵入式巡检'],
+          inspections: ['巡检记录', '查看历史巡检结果与健康评分'],
+          batches: ['批量记录', '每次批量巡检的持久化结果分析'],
+          schedules: ['定时任务', '按计划自动执行服务器巡检'],
+        }[page] || ['巡检详情', '完整巡检报告'];
   const titleEl = document.getElementById('pageTitle');
   const subEl = document.getElementById('pageSub');
   if (titleEl) titleEl.textContent = meta[0];
   if (subEl) subEl.textContent = meta[1];
 
-  if (page === 'servers') viewServers();
+  if (page === 'servers' && id) viewServerDetail(id);
+  else if (page === 'servers') viewServers();
   else if (page === 'inspections' && id) viewInspection(id);
   else if (page === 'inspections') viewInspections();
+  else if (page === 'batches') viewBatches();
+  else if (page === 'schedules') viewSchedules();
   else viewDashboard();
 }
 
@@ -482,7 +493,7 @@ async function viewDashboard() {
       const displayStatus = v.configured ? v.lastStatus : 'pending';
       const hasReport = v.configured && v.lastInspectionId;
       return `
-      <a class="mini-item" href="${hasReport ? `#/inspections/${v.lastInspectionId}` : '#/servers'}">
+      <a class="mini-item" href="#/servers/${v.id}">
         <div class="mini-main">
           <div class="mini-title">${esc(v.name)}</div>
           <div class="mini-sub">${esc(v.username || '未配置账号')}@${esc(v.host)}:${v.port}${v.nodeRole ? ' · ' + esc(v.nodeRole) : ''}${v.group ? ' · ' + esc(v.group) : ''}</div>
@@ -615,9 +626,7 @@ function renderServersTable() {
     return `<tr>
       <td class="check-cell"><input type="checkbox" class="row-check" value="${v.id}" ${state.selected.has(v.id) ? 'checked' : ''} ${v.configured ? '' : 'disabled title="请先配置登录方式"'} aria-label="选择 ${esc(v.name)}"></td>
       <td>
-        ${hasReport
-          ? `<a class="cell-main" href="#/inspections/${v.lastInspectionId}">${esc(v.name)}</a>`
-          : `<div class="cell-main">${esc(v.name)}</div>`}
+        <a class="cell-main" href="#/servers/${v.id}">${esc(v.name)}</a>
         <div class="cell-sub">${esc(v.username || '未配置账号')}@${esc(v.host)}:${v.port}</div>
       </td>
       <td>${v.nodeRole ? `<span class="role-text" title="${esc(v.nodeRole)}">${esc(v.nodeRole)}</span>` : '<span class="muted">—</span>'}</td>
@@ -1028,8 +1037,11 @@ function openServerForm(server) {
         ? (needsCredential ? '登录方式已配置，可执行巡检' : '服务器信息已更新')
         : '服务器已添加', 'success');
       if (state.route.name === 'servers') {
-        await loadServers();
-        renderServersTable();
+        if (state.route.id) await viewServerDetail(state.route.id);
+        else {
+          await loadServers();
+          renderServersTable();
+        }
       } else {
         onRoute();
       }
@@ -1078,8 +1090,12 @@ async function trustServer(id, btn) {
     toast('已更新主机密钥指纹，请重新测试连接', 'success');
     if (btn) btn.remove();
     if (state.route.name === 'servers') {
-      await loadServers();
-      renderServersTable();
+      if (state.route.id) {
+        await viewServerDetail(state.route.id);
+      } else {
+        await loadServers();
+        renderServersTable();
+      }
     }
   } catch (err) {
     toast(err.message, 'error');
@@ -1167,12 +1183,42 @@ async function batchInspect(btn) {
   const summary = buildBatchSummary(results, skipped, Date.now() - startedAt);
   if (box) box.classList.remove('show');
   if (btn) btn.disabled = false;
+
+  let finalSummary = summary;
+  try {
+    const inspectionIds = results
+      .filter((r) => r.inspection && r.inspection.id)
+      .map((r) => r.inspection.id);
+    const failures = results
+      .filter((r) => !r.inspection || !r.inspection.id)
+      .map((r) => ({
+        serverId: r.id,
+        name: (r.server && r.server.name) || ('#' + r.id),
+        host: (r.server && r.server.host) || '',
+        nodeRole: (r.server && r.server.nodeRole) || '',
+        group: (r.server && r.server.group) || '',
+        error: (r.inspection && r.inspection.error) || r.httpError || '巡检失败',
+      }));
+    const saved = await api('/api/batches', {
+      method: 'POST',
+      body: {
+        inspectionIds,
+        failures,
+        skipped,
+        elapsedMs: summary.elapsedMs,
+      },
+    });
+    if (saved && saved.summary) finalSummary = saved.summary;
+  } catch (e) {
+    toast('批量结果已生成，但保存批量记录失败：' + e.message, 'warn');
+  }
+
   toast(`批量巡检完成：成功 ${ok} 台${fail ? `，失败 ${fail} 台` : ''}`, fail ? 'warn' : 'success');
   state.selected.clear();
   await loadServers();
   renderServersTable();
   if (state.user && state.route.name === 'servers') {
-    openBatchSummary(summary);
+    openBatchSummary(finalSummary);
   }
 }
 
@@ -1295,12 +1341,623 @@ function openBatchSummary(summary) {
     ${commonBlock}
     <div class="modal-foot">
       <div class="spacer"></div>
+      <a class="btn" href="#/batches" data-close>批量记录</a>
       <a class="btn btn-primary" href="#/inspections" data-close>查看巡检记录</a>
       <button type="button" class="btn btn-ghost" data-close>关闭</button>
     </div>
   </div>`;
 
   openModal({ title: '批量巡检结果分析', body, size: 'xl' });
+}
+
+/* ---------------- 批量记录 ---------------- */
+
+async function viewBatches() {
+  const view = document.getElementById('view');
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="muted" style="font-size:12.5px">手动批量巡检与定时任务执行后都会保留分析记录。</div>
+      <div class="toolbar-right">
+        <button class="btn" data-action="refresh-batches">刷新</button>
+      </div>
+    </div>
+    <div class="card table-wrap">
+      <table class="data-table">
+        <thead><tr>
+          <th>执行时间</th><th>触发方式</th><th>服务器</th><th>结果分布</th><th>平均分</th><th>耗时</th><th class="right">操作</th>
+        </tr></thead>
+        <tbody id="batchRows"><tr><td colspan="7"><div class="view-loading"><span class="spinner"></span>正在加载批量记录…</div></td></tr></tbody>
+      </table>
+      <div class="pager" id="batchPager"></div>
+    </div>`;
+
+  const tbody = document.getElementById('batchRows');
+  const pager = document.getElementById('batchPager');
+  let offset = 0;
+  let total = 0;
+  let items = [];
+
+  const render = () => {
+    tbody.innerHTML = items.length
+      ? items.map((b) => {
+        const trigger = b.trigger === 'scheduled'
+          ? `<span class="badge badge-info">定时</span><div class="cell-sub">${esc(b.name || '')}</div>`
+          : '<span class="badge badge-skipped">手动</span>';
+        const counts = [
+          ['ok', b.okCount, 'var(--success)'],
+          ['warning', b.warningCount, 'var(--warning)'],
+          ['critical', b.criticalCount, 'var(--danger)'],
+          ['error', b.errorCount, '#991b1b'],
+        ].filter(([, n]) => n > 0)
+          .map(([key, n, color]) => `<span class="chip"><i style="background:${color}"></i>${STATUS[key].text} <b>${n}</b></span>`)
+          .join(' ');
+        return `<tr>
+          <td class="muted nowrap">${fmtTime(b.startedAt)}</td>
+          <td>${trigger}</td>
+          <td>${b.serverCount} 台${b.skipped ? `<div class="cell-sub">跳过 ${b.skipped} 台</div>` : ''}</td>
+          <td>${counts || '<span class="muted">—</span>'}</td>
+          <td>${b.serverCount ? `<span class="score-pill ${b.avgScore >= 85 ? 'good' : (b.avgScore >= 70 ? 'mid' : 'bad')}">${b.avgScore.toFixed(1)}</span>` : '<span class="muted">—</span>'}</td>
+          <td class="muted nowrap">${fmtDuration(b.elapsedMs)}</td>
+          <td class="right"><button class="btn btn-xs" data-action="view-batch" data-id="${b.id}">查看分析</button></td>
+        </tr>`;
+      }).join('')
+      : `<tr><td colspan="7"><div class="empty">暂无批量记录<br><br><a class="btn btn-primary" href="#/servers">前往服务器执行批量巡检</a></div></td></tr>`;
+
+    if (items.length < total) {
+      pager.innerHTML = `<button class="btn" id="batchMore">加载更多（${items.length} / ${total}）</button>`;
+      const more = document.getElementById('batchMore');
+      more.addEventListener('click', async (e) => {
+        e.currentTarget.disabled = true;
+        offset = items.length;
+        await load(false);
+      });
+    } else {
+      pager.innerHTML = total ? `<span class="muted" style="font-size:12px">共 ${total} 条记录</span>` : '';
+    }
+  };
+
+  const load = async (reset) => {
+    if (reset) {
+      offset = 0;
+      tbody.innerHTML = '<tr><td colspan="7"><div class="view-loading"><span class="spinner"></span>正在加载批量记录…</div></td></tr>';
+    }
+    try {
+      const data = await api(`/api/batches?limit=20&offset=${offset}`);
+      total = data.total || 0;
+      items = reset ? (data.items || []) : items.concat(data.items || []);
+      render();
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="7"><div class="empty">${esc(e.message)}</div></td></tr>`;
+    }
+  };
+
+  await load(true);
+}
+
+/* ---------------- 定时任务 ---------------- */
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+function scheduleStatusBadge(status) {
+  if (!status) return '<span class="badge badge-muted">未执行</span>';
+  if (status === 'running') return '<span class="badge badge-info">执行中</span>';
+  if (status === 'skipped') return '<span class="badge badge-skipped">跳过</span>';
+  return statusBadge(status);
+}
+
+function formatScheduleFrequency(sch) {
+  if (sch.freqType === 'interval') {
+    const minutes = sch.intervalMinutes || 60;
+    return minutes % 60 === 0 ? `每 ${minutes / 60} 小时` : `每 ${minutes} 分钟`;
+  }
+  const hh = String(sch.atHour || 0).padStart(2, '0');
+  const mm = String(sch.atMinute || 0).padStart(2, '0');
+  if (sch.freqType === 'weekly') {
+    return `每${WEEKDAYS[sch.weekday] || '周一'} ${hh}:${mm}`;
+  }
+  return `每天 ${hh}:${mm}`;
+}
+
+function scheduleScopeLabel(sch) {
+  if (sch.scopeType === 'group') return `分组：${esc(sch.scopeValue)}`;
+  if (sch.scopeType === 'custom') return `自选 ${sch.targetCount || (sch.serverIds || []).length} 台`;
+  return '全部服务器';
+}
+
+async function viewSchedules() {
+  if (!state.servers.length) await loadServers();
+  const view = document.getElementById('view');
+  view.innerHTML = `
+    <div class="toolbar">
+      <div class="muted" style="font-size:12.5px">定时任务会按计划自动巡检，并生成可在「批量记录」中查看的分析结果。</div>
+      <div class="toolbar-right">
+        <button class="btn" data-action="refresh-schedules">刷新</button>
+        <button class="btn btn-primary" data-action="add-schedule">＋ 新建计划</button>
+      </div>
+    </div>
+    <div class="card table-wrap" id="scheduleTableWrap">
+      <div class="card-body"><div class="view-loading"><span class="spinner"></span>正在加载定时任务…</div></div>
+    </div>`;
+
+  try {
+    state.schedules = (await api('/api/schedules')) || [];
+  } catch (e) {
+    state.schedules = [];
+    document.getElementById('scheduleTableWrap').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+  renderSchedulesTable();
+}
+
+function renderSchedulesTable() {
+  const wrap = document.getElementById('scheduleTableWrap');
+  if (!wrap) return;
+  const list = state.schedules || [];
+  if (!list.length) {
+    wrap.innerHTML = `<div class="empty">暂无定时任务<br><br><button class="btn btn-primary" data-action="add-schedule">＋ 新建计划</button></div>`;
+    return;
+  }
+  const rows = list.map((sch) => {
+    const lastRun = sch.lastRunAt
+      ? `<div>${fmtRelative(sch.lastRunAt)}</div>${scheduleStatusBadge(sch.lastStatus)}`
+      : scheduleStatusBadge('');
+    return `<tr>
+      <td>
+        <div class="cell-main">${esc(sch.name)}</div>
+        <div class="cell-sub">${sch.enabled ? '已启用' : '已停用'}</div>
+      </td>
+      <td>${scheduleScopeLabel(sch)}</td>
+      <td>${esc(formatScheduleFrequency(sch))}</td>
+      <td>${sch.targetCount || 0} 台</td>
+      <td class="muted nowrap">${sch.enabled && sch.nextRunAt ? fmtTime(sch.nextRunAt) : '—'}</td>
+      <td>${lastRun}${sch.lastError ? `<div class="cell-sub" title="${esc(sch.lastError)}">${esc(truncate(sch.lastError, 40))}</div>` : ''}</td>
+      <td class="right">
+        <div class="row-actions">
+          <button class="btn btn-xs btn-primary" data-action="run-schedule" data-id="${sch.id}">立即执行</button>
+          <button class="btn btn-xs" data-action="edit-schedule" data-id="${sch.id}">编辑</button>
+          <button class="btn btn-xs" data-action="toggle-schedule" data-id="${sch.id}">${sch.enabled ? '停用' : '启用'}</button>
+          <button class="btn btn-xs btn-danger-ghost" data-action="delete-schedule" data-id="${sch.id}">删除</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML = `<table class="data-table">
+    <thead><tr>
+      <th>计划</th><th>范围</th><th>频率</th><th>目标</th><th>下次执行</th><th>上次执行</th><th class="right">操作</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function openScheduleForm(schedule) {
+  const isEdit = !!schedule;
+  const groups = [...new Set((state.servers || []).map((v) => v.group).filter(Boolean))].sort();
+  const selectedServerIDs = new Set((schedule && schedule.serverIds) || []);
+  const scope = schedule ? schedule.scopeType : 'all';
+  const freq = schedule ? schedule.freqType : 'daily';
+  const timeValue = schedule
+    ? `${String(schedule.atHour || 0).padStart(2, '0')}:${String(schedule.atMinute || 0).padStart(2, '0')}`
+    : '02:00';
+
+  const serverOptions = (state.servers || []).map((v) => `
+    <option value="${v.id}" ${selectedServerIDs.has(v.id) ? 'selected' : ''}>
+      ${esc(v.name)} (${esc(v.host)}:${v.port})${v.configured ? '' : ' · 待配置'}
+    </option>`).join('');
+
+  const body = `
+  <form id="scheduleForm" class="form-grid" autocomplete="off">
+    <div class="form-row">
+      <div class="field">
+        <label class="label" for="sch-name">计划名称<span class="req">*</span></label>
+        <input class="input" id="sch-name" name="name" value="${esc(schedule ? schedule.name : '')}" placeholder="例如：生产环境每日巡检" required maxlength="100">
+      </div>
+      <div class="field">
+        <label class="label" for="sch-enabled">状态</label>
+        <label style="display:flex;align-items:center;gap:8px;height:36px;font-size:13px;color:#374151">
+          <input type="checkbox" id="sch-enabled" name="enabled" style="width:16px;height:16px;accent-color:var(--primary)" ${!schedule || schedule.enabled ? 'checked' : ''}>
+          启用该计划
+        </label>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="field">
+        <label class="label" for="sch-scope">巡检范围</label>
+        <select class="select" id="sch-scope" name="scope">
+          <option value="all" ${scope === 'all' ? 'selected' : ''}>全部已配置服务器</option>
+          <option value="group" ${scope === 'group' ? 'selected' : ''}>按分组</option>
+          <option value="custom" ${scope === 'custom' ? 'selected' : ''}>自选服务器</option>
+        </select>
+      </div>
+      <div class="field" id="scopeGroupField">
+        <label class="label" for="sch-group">分组名称</label>
+        <input class="input" id="sch-group" name="group" list="scheduleGroups" value="${esc(schedule ? schedule.scopeValue : '')}" placeholder="选择或输入分组" maxlength="50">
+        <datalist id="scheduleGroups">${groups.map((g) => `<option value="${esc(g)}"></option>`).join('')}</datalist>
+      </div>
+    </div>
+
+    <div class="field" id="scopeCustomField">
+      <label class="label" for="sch-servers">自选服务器</label>
+      <select class="select" id="sch-servers" name="servers" multiple size="8" style="height:auto;padding:8px">
+        ${serverOptions || '<option disabled>暂无服务器</option>'}
+      </select>
+      <div class="help">只有已配置登录方式的服务器会被执行；按住 Ctrl/Shift 多选。</div>
+    </div>
+
+    <div class="form-row">
+      <div class="field">
+        <label class="label" for="sch-freq">执行频率</label>
+        <select class="select" id="sch-freq" name="freq">
+          <option value="interval" ${freq === 'interval' ? 'selected' : ''}>按间隔</option>
+          <option value="daily" ${freq === 'daily' ? 'selected' : ''}>每天固定时间</option>
+          <option value="weekly" ${freq === 'weekly' ? 'selected' : ''}>每周固定时间</option>
+        </select>
+      </div>
+      <div class="field" id="freqIntervalField">
+        <label class="label" for="sch-interval">执行间隔（分钟）</label>
+        <input class="input" id="sch-interval" name="interval" type="number" min="5" max="10080" value="${schedule ? schedule.intervalMinutes : 60}">
+        <div class="help">例如 60 = 每小时，1440 = 每天</div>
+      </div>
+      <div class="field" id="freqTimeField">
+        <label class="label" for="sch-time">执行时间</label>
+        <input class="input" id="sch-time" name="time" type="time" value="${timeValue}">
+      </div>
+      <div class="field" id="freqWeekdayField">
+        <label class="label" for="sch-weekday">星期</label>
+        <select class="select" id="sch-weekday" name="weekday">
+          ${WEEKDAYS.map((name, idx) => `<option value="${idx}" ${schedule && schedule.weekday === idx ? 'selected' : ''}>${name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button type="button" class="btn btn-ghost" data-close>取消</button>
+      <button type="submit" class="btn btn-primary">${isEdit ? '保存修改' : '创建计划'}</button>
+    </div>
+  </form>`;
+
+  const close = openModal({ title: isEdit ? '编辑定时任务' : '新建定时任务', body, wide: true });
+  const form = document.getElementById('scheduleForm');
+  const scopeEl = document.getElementById('sch-scope');
+  const freqEl = document.getElementById('sch-freq');
+  const syncFields = () => {
+    document.getElementById('scopeGroupField').hidden = scopeEl.value !== 'group';
+    document.getElementById('scopeCustomField').hidden = scopeEl.value !== 'custom';
+    const isInterval = freqEl.value === 'interval';
+    document.getElementById('freqIntervalField').hidden = !isInterval;
+    document.getElementById('freqTimeField').hidden = isInterval;
+    document.getElementById('freqWeekdayField').hidden = freqEl.value !== 'weekly';
+  };
+  scopeEl.addEventListener('change', syncFields);
+  freqEl.addEventListener('change', syncFields);
+  syncFields();
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('sch-name').value.trim();
+    if (!name) {
+      toast('请输入计划名称', 'warn');
+      return;
+    }
+    const scopeType = scopeEl.value;
+    const scopeValue = document.getElementById('sch-group').value.trim();
+    if (scopeType === 'group' && !scopeValue) {
+      toast('请输入分组名称', 'warn');
+      return;
+    }
+    const serverIds = [...document.getElementById('sch-servers').selectedOptions]
+      .map((o) => Number(o.value))
+      .filter((id) => id > 0);
+    if (scopeType === 'custom' && !serverIds.length) {
+      toast('请至少选择一台服务器', 'warn');
+      return;
+    }
+    const freqType = freqEl.value;
+    const intervalMinutes = Number(document.getElementById('sch-interval').value) || 60;
+    if (freqType === 'interval' && (intervalMinutes < 5 || intervalMinutes > 10080)) {
+      toast('执行间隔必须在 5-10080 分钟之间', 'warn');
+      return;
+    }
+    const timeText = document.getElementById('sch-time').value || '02:00';
+    const [atHour, atMinute] = timeText.split(':').map((v) => Number(v) || 0);
+    const payload = {
+      name,
+      enabled: document.getElementById('sch-enabled').checked,
+      scopeType,
+      scopeValue: scopeType === 'group' ? scopeValue : '',
+      freqType,
+      intervalMinutes,
+      atHour,
+      atMinute,
+      weekday: Number(document.getElementById('sch-weekday').value) || 0,
+      serverIds: scopeType === 'custom' ? serverIds : [],
+    };
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner spinner-light"></span> 保存中…';
+    try {
+      if (isEdit) await api(`/api/schedules/${schedule.id}`, { method: 'PUT', body: payload });
+      else await api('/api/schedules', { method: 'POST', body: payload });
+      close();
+      toast(isEdit ? '定时任务已更新' : '定时任务已创建', 'success');
+      await viewSchedules();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = isEdit ? '保存修改' : '创建计划';
+    }
+  });
+}
+
+async function runSchedule(id, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+  }
+  try {
+    const data = await api(`/api/schedules/${id}/run`, { method: 'POST' });
+    toast('定时任务执行完成', data.batch.errorCount ? 'warn' : 'success');
+    await viewSchedules();
+    openBatchSummary(data.summary);
+  } catch (err) {
+    toast(err.message, 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '立即执行';
+    }
+  }
+}
+
+async function toggleSchedule(id, btn) {
+  const sch = (state.schedules || []).find((s) => s.id === id);
+  if (!sch || !btn) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/schedules/${id}`, {
+      method: 'PUT',
+      body: {
+        name: sch.name,
+        enabled: !sch.enabled,
+        scopeType: sch.scopeType,
+        scopeValue: sch.scopeValue,
+        freqType: sch.freqType,
+        intervalMinutes: sch.intervalMinutes,
+        atHour: sch.atHour,
+        atMinute: sch.atMinute,
+        weekday: sch.weekday,
+        serverIds: sch.serverIds || [],
+      },
+    });
+    toast(sch.enabled ? '计划已停用' : '计划已启用', 'success');
+    await viewSchedules();
+  } catch (err) {
+    toast(err.message, 'error');
+    btn.disabled = false;
+  }
+}
+
+/* ---------------- 服务器详情 / 趋势 ---------------- */
+
+async function viewServerDetail(id) {
+  const view = document.getElementById('view');
+  view.innerHTML = '<div class="view-loading"><span class="spinner"></span>正在加载服务器详情…</div>';
+  try {
+    if (!state.servers.length) await loadServers();
+    const [server, trends, history] = await Promise.all([
+      api(`/api/servers/${id}`),
+      api(`/api/servers/${id}/trends?days=30`),
+      api(`/api/inspections?serverId=${id}&limit=10`),
+    ]);
+    let latest = null;
+    if (server.lastInspectionId) {
+      try {
+        latest = await api(`/api/inspections/${server.lastInspectionId}`);
+      } catch (e) {
+        latest = null;
+      }
+    }
+    state.serverDetail = {
+      id,
+      server,
+      latest,
+      points: trends.points || [],
+      days: trends.days || 30,
+      history: history.items || [],
+    };
+    renderServerDetail();
+  } catch (e) {
+    view.innerHTML = `<div class="card error-card"><div class="error-icon">!</div><h3>无法加载服务器详情</h3><p>${esc(e.message)}</p><a class="btn" href="#/servers">返回服务器列表</a></div>`;
+  }
+}
+
+function renderServerDetail() {
+  const d = state.serverDetail;
+  if (!d) return;
+  const s = d.server;
+  const ins = d.latest && d.latest.inspection;
+  const rep = d.latest && d.latest.report;
+  const status = s.configured ? (ins ? ins.status : '') : 'pending';
+  const showStatus = s.configured ? status : 'pending';
+
+  const infoItems = [
+    ['登录用户', s.username || '未配置'],
+    ['登录配置', s.configured ? '已配置' : '待配置'],
+    ['节点职责', s.nodeRole || '—'],
+    ['分组', s.group || '—'],
+    ['标签', s.tags || '—'],
+    ['操作系统', rep ? rep.detectedOs : '—'],
+    ['内核', rep ? rep.kernel : '—'],
+    ['架构', rep ? rep.arch : '—'],
+    ['运行时长', rep ? fmtUptime(rep.uptimeSeconds) : '—'],
+    ['主机密钥指纹', s.hostKey || '首次连接时自动记录'],
+    ['创建时间', fmtTime(s.createdAt)],
+    ['更新时间', fmtTime(s.updatedAt)],
+    ['备注', s.note || '—'],
+  ];
+  const infoHtml = infoItems.map(([label, value]) => `
+    <div class="info-item">
+      <div class="info-label">${esc(label)}</div>
+      <div class="info-value ${label === '主机密钥指纹' ? 'mono' : ''}">${esc(value)}</div>
+    </div>`).join('');
+
+  let latestHtml = '<div class="empty">暂无巡检记录</div>';
+  if (ins && rep) {
+    const m = rep.metrics || {};
+    const warnings = (rep.warnings || []).slice(0, 4);
+    latestHtml = `
+      <div class="latest-head">
+        ${statusBadge(showStatus)}
+        <span class="score-pill ${scoreClass(ins.score, ins.status)}">${ins.score} 分</span>
+        <span class="muted">${fmtTime(ins.startedAt)} · 耗时 ${fmtDuration(ins.durationMs)}</span>
+        <div class="spacer"></div>
+        <a class="link" href="#/inspections/${ins.id}">查看完整报告 →</a>
+      </div>
+      <div class="detail-metrics">
+        <div><span>CPU</span><strong>${fmtNum(m.cpuPercent, 1)}%</strong></div>
+        <div><span>负载 1m</span><strong>${fmtNum(m.load1, 2)}</strong></div>
+        <div><span>内存</span><strong>${fmtNum(m.memPercent, 1)}%</strong></div>
+        <div><span>磁盘</span><strong>${fmtNum(m.diskPercent, 1)}%</strong></div>
+      </div>
+      ${warnings.length ? `<div class="warn-box"><h4>需要关注（${rep.warnings.length}）</h4><ul>${warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul></div>` : '<div class="batch-empty-ok" style="margin-top:12px">本次巡检未发现告警</div>'}`;
+  }
+
+  const historyRows = (d.history || []).length
+    ? d.history.map((h) => `<tr>
+        <td class="muted mono">#${h.id}</td>
+        <td>${statusBadge(h.status)}</td>
+        <td>${h.status === 'error' ? '<span class="muted">—</span>' : `<span class="score-pill ${scoreClass(h.score, h.status)}">${h.score}</span>`}</td>
+        <td class="muted nowrap">${fmtTime(h.startedAt)}</td>
+        <td class="muted nowrap">${fmtDuration(h.durationMs)}</td>
+        <td class="right"><a class="btn btn-xs" href="#/inspections/${h.id}">查看</a></td>
+      </tr>`).join('')
+    : '<tr><td colspan="6"><div class="empty">暂无巡检历史</div></td></tr>';
+
+  const rangeButtons = [7, 30, 90].map((days) =>
+    `<button type="button" class="range-tab ${d.days === days ? 'active' : ''}" data-action="trend-range" data-days="${days}">${days} 天</button>`).join('');
+
+  document.getElementById('view').innerHTML = `
+    <div class="detail-head">
+      <div>
+        <a class="link" href="#/servers">← 服务器列表</a>
+        <div class="report-title" style="margin-top:8px">${esc(s.name)} <span class="muted">${esc(s.host)}:${s.port}</span></div>
+        <div class="report-meta">${statusBadge(showStatus)} ${s.nodeRole ? `<span class="chip">${esc(s.nodeRole)}</span>` : ''}${s.group ? `<span class="chip">${esc(s.group)}</span>` : ''}${s.tags ? `<span class="muted">${esc(s.tags)}</span>` : ''}</div>
+      </div>
+      <div class="report-actions">
+        ${s.configured
+          ? `<button class="btn btn-primary" data-action="inspect" data-id="${s.id}">立即巡检</button>`
+          : `<button class="btn btn-primary" data-action="edit-server" data-id="${s.id}">配置登录</button>`}
+        <button class="btn" data-action="edit-server" data-id="${s.id}">编辑</button>
+        ${s.lastInspectionId ? `<a class="btn btn-ghost" href="#/inspections/${s.lastInspectionId}">最新报告</a>` : ''}
+      </div>
+    </div>
+    <div class="detail-grid">
+      <div class="card">
+        <div class="card-head"><h3>基本信息</h3></div>
+        <div class="card-body"><div class="info-grid">${infoHtml}</div></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>最新巡检</h3></div>
+        <div class="card-body">${latestHtml}</div>
+      </div>
+    </div>
+    <div class="card trend-card">
+      <div class="card-head">
+        <h3>趋势</h3>
+        <div class="range-tabs">${rangeButtons}</div>
+      </div>
+      <div class="card-body" id="trendCharts">${renderTrendCharts(d.points)}</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>巡检历史</h3><a class="link" href="#/inspections">全部记录 →</a></div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>记录</th><th>状态</th><th>健康分</th><th>巡检时间</th><th>耗时</th><th class="right">操作</th></tr></thead>
+          <tbody>${historyRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  const sub = document.getElementById('pageSub');
+  if (sub) sub.textContent = `${s.name} · ${s.host}:${s.port}`;
+}
+
+async function loadTrendRange(days) {
+  const d = state.serverDetail;
+  if (!d) return;
+  try {
+    const data = await api(`/api/servers/${d.id}/trends?days=${days}`);
+    d.days = data.days || days;
+    d.points = data.points || [];
+    const box = document.getElementById('trendCharts');
+    if (box) box.innerHTML = renderTrendCharts(d.points);
+    document.querySelectorAll('.range-tab').forEach((btn) => {
+      btn.classList.toggle('active', Number(btn.dataset.days) === d.days);
+    });
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function renderTrendCharts(points) {
+  if (!points || !points.length) {
+    return '<div class="empty">暂无趋势数据，完成几次巡检后即可查看健康分和资源变化。</div>';
+  }
+  const scoreChart = buildTrendSVG(points, [{ key: 'score', label: '健康分', color: '#059669' }], '健康分');
+  const resourceChart = buildTrendSVG(points, [
+    { key: 'cpuPercent', label: 'CPU', color: '#2563eb' },
+    { key: 'memPercent', label: '内存', color: '#d97706' },
+    { key: 'diskPercent', label: '磁盘', color: '#7c3aed' },
+  ], 'CPU / 内存 / 磁盘');
+  return `
+    <div class="chart-block">
+      <div class="chart-legend"><span><i style="background:#059669"></i>健康分</span></div>
+      ${scoreChart}
+    </div>
+    <div class="chart-block">
+      <div class="chart-legend">
+        <span><i style="background:#2563eb"></i>CPU</span>
+        <span><i style="background:#d97706"></i>内存</span>
+        <span><i style="background:#7c3aed"></i>磁盘</span>
+      </div>
+      ${resourceChart}
+    </div>`;
+}
+
+function buildTrendSVG(points, series, label) {
+  const W = 760;
+  const H = 210;
+  const padL = 38;
+  const padR = 18;
+  const padT = 14;
+  const padB = 28;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const xAt = (i) => padL + (points.length <= 1 ? innerW / 2 : innerW * i / (points.length - 1));
+  const yAt = (v) => padT + innerH - innerH * Math.max(0, Math.min(100, Number(v) || 0)) / 100;
+
+  let grid = '';
+  [0, 25, 50, 75, 100].forEach((v) => {
+    const y = yAt(v);
+    grid += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#eef1f7" stroke-width="1"/>`;
+    grid += `<text x="${padL - 8}" y="${y + 3}" text-anchor="end" font-size="10" fill="#9ca3af">${v}%</text>`;
+  });
+
+  let xLabels = '';
+  const indexes = points.length <= 1 ? [0] : [0, Math.floor((points.length - 1) / 2), points.length - 1];
+  [...new Set(indexes)].forEach((i) => {
+    const p = points[i];
+    const text = p && p.startedAt ? new Date(p.startedAt).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) : '';
+    xLabels += `<text x="${xAt(i)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#9ca3af">${esc(text)}</text>`;
+  });
+
+  const lines = series.map((s) => {
+    const coords = points.map((p, i) => `${xAt(i)},${yAt(p[s.key])}`).join(' ');
+    const circles = points.map((p, i) => `<circle cx="${xAt(i)}" cy="${yAt(p[s.key])}" r="2.5" fill="${s.color}"><title>${esc(fmtTime(p.startedAt))} ${esc(s.label)}: ${fmtNum(p[s.key], 1)}${s.key === 'score' ? ' 分' : '%'}</title></circle>`).join('');
+    return `<polyline points="${coords}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${circles}`;
+  }).join('');
+
+  return `<svg class="trend-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)} 趋势">${grid}${lines}${xLabels}</svg>`;
 }
 
 /* ---------------- 巡检记录列表 ---------------- */
@@ -1538,7 +2195,56 @@ async function viewInspection(id) {
     </section>`;
   }).join('');
 
-  view.innerHTML = head + summaryHtml + metricHtml + sectionsHtml;
+  view.innerHTML = head + summaryHtml + '<div id="comparisonBox"></div>' + metricHtml + sectionsHtml;
+  loadComparison(ins.id);
+}
+
+async function loadComparison(inspectionId) {
+  const box = document.getElementById('comparisonBox');
+  if (!box) return;
+  try {
+    const c = await api(`/api/inspections/${inspectionId}/compare`);
+    if (!c.available) {
+      box.innerHTML = '<div class="card comparison-card"><div class="card-body muted" style="font-size:12.5px">暂无上一次可对比的巡检记录。</div></div>';
+      return;
+    }
+    const delta = Number(c.scoreDelta) || 0;
+    const deltaClass = delta > 0 ? 'good' : (delta < 0 ? 'bad' : '');
+    const metricRow = (label, current, previous, suffix = '%') => {
+      const d = (Number(current) || 0) - (Number(previous) || 0);
+      const cls = d > 0 ? 'bad' : (d < 0 ? 'good' : '');
+      const text = `${Number(previous) || 0}${suffix} → ${Number(current) || 0}${suffix}`;
+      return `<div class="compare-metric"><span>${label}</span><strong>${text}</strong><em class="${cls}">${d > 0 ? '+' : ''}${d.toFixed(1)}${suffix}</em></div>`;
+    };
+    const issueList = (title, items, cls) => items && items.length
+      ? `<div class="compare-list"><h4 class="${cls}">${title}（${items.length}）</h4><ul>${items.slice(0, 8).map((it) => `<li>${esc(it.section)} · ${esc(it.label)}：${esc(it.value)}</li>`).join('')}</ul>${items.length > 8 ? `<div class="batch-note">仅展示前 8 项</div>` : ''}</div>`
+      : '';
+    const changed = (c.changed || []).length
+      ? `<div class="compare-list"><h4 class="muted">状态变化（${c.changed.length}）</h4><ul>${c.changed.slice(0, 6).map((it) => `<li>${esc(it.section)} · ${esc(it.label)}：${esc(it.previousStatus)} → ${esc(it.currentStatus)}</li>`).join('')}</ul></div>`
+      : '';
+    const issueBlocks = issueList('新增问题', c.newIssues, 'bad') + issueList('已消除问题', c.resolvedIssues, 'good') + changed;
+    box.innerHTML = `<div class="card comparison-card">
+      <div class="card-head">
+        <h3>与上次对比</h3>
+        <a class="link" href="#/inspections/${c.previousId}">查看上次报告 →</a>
+      </div>
+      <div class="card-body">
+        <div class="compare-score">
+          <div><span>健康分</span><strong>${c.previousScore} → ${c.currentScore} <em class="${deltaClass}">${delta > 0 ? '+' : ''}${delta}</em></strong></div>
+          <div><span>状态</span><strong>${statusBadge(c.previousStatus)} <span class="muted">→</span> ${statusBadge(c.currentStatus)}</strong></div>
+          <div><span>上次巡检</span><strong class="muted">${fmtTime(c.previousAt)}</strong></div>
+        </div>
+        <div class="compare-metrics">
+          ${metricRow('CPU', c.currentMetrics.cpuPercent, c.previousMetrics.cpuPercent)}
+          ${metricRow('内存', c.currentMetrics.memPercent, c.previousMetrics.memPercent)}
+          ${metricRow('磁盘', c.currentMetrics.diskPercent, c.previousMetrics.diskPercent)}
+        </div>
+        ${issueBlocks || '<div class="muted" style="font-size:12.5px">本次与上次相比没有异常项变化。</div>'}
+      </div>
+    </div>`;
+  } catch (e) {
+    box.innerHTML = '';
+  }
 }
 
 /* ---------------- 全局交互 ---------------- */
@@ -1622,11 +2328,12 @@ document.addEventListener('click', async (event) => {
       break;
     }
     case 'view-server': {
-      const srv = state.servers.find((v) => v.id === id);
-      if (srv && srv.lastInspectionId) location.hash = `#/inspections/${srv.lastInspectionId}`;
-      else toast('该服务器尚无巡检记录，请先执行巡检', 'info');
+      location.hash = `#/servers/${id}`;
       break;
     }
+    case 'trend-range':
+      loadTrendRange(Number(el.dataset.days) || 30);
+      break;
     case 'batch-inspect':
       batchInspect(el);
       break;
@@ -1657,6 +2364,47 @@ document.addEventListener('click', async (event) => {
       break;
     case 'trust-server':
       trustServer(id, el);
+      break;
+    case 'view-batch':
+      try {
+        const data = await api(`/api/batches/${id}`);
+        openBatchSummary(data.summary);
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+      break;
+    case 'refresh-batches':
+      viewBatches();
+      break;
+    case 'add-schedule':
+      openScheduleForm(null);
+      break;
+    case 'edit-schedule': {
+      const sch = (state.schedules || []).find((s) => s.id === id);
+      if (sch) openScheduleForm(sch);
+      break;
+    }
+    case 'run-schedule':
+      runSchedule(id, el);
+      break;
+    case 'toggle-schedule':
+      toggleSchedule(id, el);
+      break;
+    case 'delete-schedule': {
+      const sch = (state.schedules || []).find((s) => s.id === id);
+      confirmAction({
+        title: '删除定时任务',
+        message: `确定删除定时任务 <strong>${esc(sch ? sch.name : '#' + id)}</strong> 吗？已执行的批量记录会保留。`,
+        onConfirm: async () => {
+          await api(`/api/schedules/${id}`, { method: 'DELETE' });
+          toast('定时任务已删除', 'success');
+          await viewSchedules();
+        },
+      });
+      break;
+    }
+    case 'refresh-schedules':
+      viewSchedules();
       break;
     default:
       break;

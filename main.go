@@ -17,13 +17,15 @@ import (
 
 	"serverinspect/internal/console"
 	"serverinspect/internal/inspect"
+	"serverinspect/internal/runner"
+	"serverinspect/internal/scheduler"
 	"serverinspect/internal/secret"
 	"serverinspect/internal/store"
 	"serverinspect/internal/web"
 )
 
 // version 可在构建时通过 -ldflags "-X main.version=x.y.z" 注入。
-var version = "1.0.7"
+var version = "1.0.8"
 
 func main() {
 	console.EnableUTF8()
@@ -112,6 +114,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	inspectOpts := inspect.DefaultOptions()
+	run := runner.New(st, cipher, runner.Config{
+		DialTimeout:      *dialTimeout,
+		InspectOptions:   inspectOpts,
+		SkipHostKeyCheck: *skipHostKey,
+		Concurrency:      3,
+	}, logger)
+	sched := scheduler.New(st, run, logger, 30*time.Second)
+
 	cfg := web.Config{
 		Version:          version,
 		SessionSecret:    secret.DeriveKey(masterKey, "session-token"),
@@ -120,9 +131,9 @@ func main() {
 		DialTimeout:      *dialTimeout,
 		InspectTimeout:   *inspectTimeout,
 		SkipHostKeyCheck: *skipHostKey,
-		InspectOptions:   inspect.DefaultOptions(),
+		InspectOptions:   inspectOpts,
 	}
-	handler := web.New(st, cipher, cfg, logger).Handler()
+	handler := web.New(st, cipher, cfg, logger, run, sched).Handler()
 
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -140,6 +151,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	sched.Start(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {

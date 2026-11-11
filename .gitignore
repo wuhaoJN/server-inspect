@@ -18,3 +18,4 @@ coverage.out
 *.trace
 .DS_Store
 Thumbs.db
+*.exe~

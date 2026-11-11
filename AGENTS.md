@@ -1,7 +1,7 @@
 # AGENTS.md — AI 编码代理工作规范
 
 > **本文件是所有 AI 编码代理（OpenCode / Codex / Claude Code / Gemini CLI / Cursor / Copilot 等）的唯一入口规范。**
-> 最后更新：2026-11-11 · 当前版本：以 `main.go` 中 `version` 为准（本文档编写时为 1.0.7）
+> 最后更新：2026-11-11 · 当前版本：以 `main.go` 中 `version` 为准（本文档编写时为 1.0.8）
 > 详细规范：[DEVELOPMENT.md](DEVELOPMENT.md) · 部署使用：[README.md](README.md) · 后续计划：[ROADMAP.md](ROADMAP.md)
 
 ---
@@ -37,11 +37,15 @@
 ## 2. 架构地图
 
 ```text
-main.go                     启动、参数、数据目录、HTTP Server、优雅退出
+main.go                     启动、参数、数据目录、HTTP Server、调度器、优雅退出
 internal/secret              AES-256-GCM、bcrypt、随机口令/令牌
-internal/store              SQLite：servers / inspections / settings
+internal/store              SQLite：servers / inspections / batches / schedules / settings
 internal/sshx               SSH 连接、TOFU 指纹、命令执行
 internal/inspect            巡检引擎：命令表、解析器、报告、评分
+internal/runner             单台/批量巡检执行，结果持久化
+internal/scheduler          定时计划循环、NextRun、目标解析
+internal/batch              批量结果聚合分析（与前端摘要结构一致）
+internal/compare            相邻两次报告对比
 internal/netscan            IPv4 网段扫描：TCP 探测 + SSH banner
 internal/web                HTTP 路由、鉴权、API、内嵌前端
 internal/web/static/        index.html / app.css / app.js
@@ -72,7 +76,7 @@ go run . -addr 127.0.0.1:8080 -data ./data
 
 # Linux 发布包（输出 dist/）
 ./release.sh
-VERSION=1.0.7 ./release.sh
+VERSION=1.0.8 ./release.sh
 
 # 安装脚本语法检查
 bash -n deploy/install.sh
@@ -215,10 +219,10 @@ bash -n deploy/install.sh   # 改安装脚本时
 
 ## 9. 当前状态与下一步
 
-- 当前功能：服务器 CRUD、节点职责、列表「更多」菜单、批量巡检结果分析、单台/批量巡检、网络扫描、IP 排序、待配置登录、报告历史、密码可见切换、管理员改密、Linux systemd 部署。
-- 当前线上版本：1.0.7（以 `main.go`/`dist` 二进制 `-version` 为准）。
+- 当前功能：服务器 CRUD、节点职责、列表「更多」菜单、批量巡检结果分析、单台/批量巡检、网络扫描、IP 排序、待配置登录、报告历史、密码可见切换、管理员改密、Linux systemd 部署；定时任务（间隔/每天/每周）、批量记录持久化、服务器详情页、7/30/90 天趋势、报告对比。
+- 当前线上版本：1.0.8（以 `main.go`/`dist` 二进制 `-version` 为准）。
 - 待办优先级见 `ROADMAP.md`：
-  - P0：会话安全（改密失效旧会话/登录限流）、定时巡检+告警、批量配置登录、数据保留备份、报告趋势。
+  - P0：会话安全（改密失效旧会话/登录限流）、告警通知、批量配置登录、数据保留备份。
   - P1：RBAC/审计、SSH 私钥/跳板机、服务端批量任务、扫描增强、可观测性、Docker/HTTPS。
 - 不要在未确认需求时直接做 P1/P2 功能；优先修 Bug 和 P0。
 
