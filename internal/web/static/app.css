@@ -570,6 +570,42 @@ a.cell-main:hover { color: var(--primary); }
 .row-menu-item.danger { color: var(--danger); }
 .row-menu-item.danger:hover { background: var(--danger-bg); }
 
+.batch-summary { display: grid; gap: 16px; }
+.batch-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.batch-stat { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+.batch-stat span { display: block; font-size: 11.5px; color: var(--muted); }
+.batch-stat strong { display: block; margin-top: 5px; font-size: 20px; line-height: 1.1; }
+.batch-stat strong.danger { color: var(--danger); }
+.batch-stat strong.ok { color: var(--success); }
+.batch-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.batch-section h4 { margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: #374151; }
+.batch-note { font-size: 11.5px; color: var(--muted-2); line-height: 1.7; }
+.batch-empty-ok {
+  padding: 14px;
+  border: 1px solid #b7ebd5;
+  border-radius: 10px;
+  background: var(--success-bg);
+  color: #047857;
+  font-size: 13px;
+}
+.priority-list { max-height: 340px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.priority-item { display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-bottom: 1px solid #f1f3f9; background: #fff; }
+.priority-item:last-child { border-bottom: 0; }
+.priority-item.sev-critical, .priority-item.sev-error { background: #fffafa; box-shadow: inset 3px 0 0 var(--danger); }
+.priority-item.sev-warning { background: #fffdf7; box-shadow: inset 3px 0 0 var(--warning); }
+.priority-main { min-width: 0; flex: 1; }
+.priority-title { font-size: 13px; font-weight: 600; }
+.priority-title .muted { margin-left: 4px; font-family: var(--mono); font-size: 11px; font-weight: 400; }
+.priority-sub { margin-top: 3px; color: var(--muted); font-size: 11.5px; line-height: 1.6; word-break: break-word; }
+.priority-side { flex: none; display: flex; align-items: center; gap: 8px; }
+.common-list { display: grid; gap: 6px; }
+.common-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; }
+@media (max-width: 700px) {
+  .batch-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .priority-item { align-items: flex-start; flex-direction: column; }
+  .priority-side { width: 100%; justify-content: space-between; }
+}
+
 /* ============ 弹窗 / 提示 ============ */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 60;

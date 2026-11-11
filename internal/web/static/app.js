@@ -1133,6 +1133,8 @@ async function batchInspect(btn) {
   const bar = document.getElementById('batchBar');
   if (box) box.classList.add('show');
 
+  const startedAt = Date.now();
+  const results = [];
   let done = 0;
   let ok = 0;
   let fail = 0;
@@ -1146,11 +1148,14 @@ async function batchInspect(btn) {
   const worker = async () => {
     while (cursor < ids.length) {
       const id = ids[cursor++];
+      const srv = state.servers.find((v) => v.id === id);
       try {
         const data = await api(`/api/servers/${id}/inspect`, { method: 'POST' });
+        results.push({ id, server: srv, inspection: data.inspection, report: data.report, httpError: '' });
         if (data.inspection.status === 'error') fail += 1;
         else ok += 1;
       } catch (e) {
+        results.push({ id, server: srv, inspection: null, report: null, httpError: e.message });
         fail += 1;
       }
       done += 1;
@@ -1159,12 +1164,143 @@ async function batchInspect(btn) {
   };
   await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
 
+  const summary = buildBatchSummary(results, skipped, Date.now() - startedAt);
   if (box) box.classList.remove('show');
   if (btn) btn.disabled = false;
   toast(`批量巡检完成：成功 ${ok} 台${fail ? `，失败 ${fail} 台` : ''}`, fail ? 'warn' : 'success');
   state.selected.clear();
   await loadServers();
   renderServersTable();
+  if (state.user && state.route.name === 'servers') {
+    openBatchSummary(summary);
+  }
+}
+
+function buildBatchSummary(results, skipped, elapsedMs) {
+  const items = results.map((r) => {
+    const rec = r.inspection || {};
+    const report = r.report || null;
+    const status = ['ok', 'warning', 'critical', 'error'].includes(rec.status) ? rec.status : 'error';
+    return {
+      id: r.id,
+      name: (r.server && r.server.name) || rec.serverName || ('#' + r.id),
+      host: (r.server && r.server.host) || rec.host || '',
+      nodeRole: (r.server && r.server.nodeRole) || '',
+      group: (r.server && r.server.group) || '',
+      inspectionId: rec.id || 0,
+      status,
+      score: Number(rec.score) || 0,
+      error: rec.error || r.httpError || '',
+      warnings: report && Array.isArray(report.warnings) ? report.warnings : [],
+      sections: report && Array.isArray(report.sections) ? report.sections : [],
+    };
+  });
+
+  const counts = { ok: 0, warning: 0, critical: 0, error: 0 };
+  items.forEach((it) => { counts[it.status] = (counts[it.status] || 0) + 1; });
+  const scored = items.filter((it) => it.status !== 'error');
+  const avgScore = scored.length ? scored.reduce((sum, it) => sum + it.score, 0) / scored.length : 0;
+
+  const order = { error: 0, critical: 1, warning: 2, ok: 3 };
+  const priority = items
+    .filter((it) => it.status !== 'ok')
+    .sort((a, b) => (order[a.status] - order[b.status]) || (a.score - b.score) || a.name.localeCompare(b.name));
+
+  const sectionMap = new Map();
+  items.forEach((it) => {
+    it.sections.forEach((sec) => {
+      const bad = (sec.items || []).filter((x) => x.status === 'warning' || x.status === 'critical');
+      if (!bad.length) return;
+      const title = sec.title || sec.key || '其他';
+      let entry = sectionMap.get(title);
+      if (!entry) {
+        entry = { title, servers: new Set(), items: 0 };
+        sectionMap.set(title, entry);
+      }
+      entry.servers.add(it.id);
+      entry.items += bad.length;
+    });
+  });
+  const common = [...sectionMap.values()]
+    .map((entry) => ({ title: entry.title, servers: entry.servers.size, items: entry.items }))
+    .sort((a, b) => (b.servers - a.servers) || (b.items - a.items))
+    .slice(0, 5);
+
+  return {
+    items,
+    counts,
+    avgScore,
+    hasScore: scored.length > 0,
+    priority: priority.slice(0, 12),
+    issueCount: priority.length,
+    common,
+    skipped,
+    elapsedMs,
+  };
+}
+
+function openBatchSummary(summary) {
+  const counts = summary.counts;
+  const distribution = [
+    ['ok', 'var(--success)'],
+    ['warning', 'var(--warning)'],
+    ['critical', 'var(--danger)'],
+    ['error', '#991b1b'],
+  ].map(([key, color]) => `<span class="chip"><i style="background:${color}"></i>${STATUS[key].text} <b>${counts[key] || 0}</b></span>`).join('');
+
+  const stats = `<div class="batch-stats">
+    <div class="batch-stat"><span>本次巡检</span><strong>${summary.items.length} 台</strong></div>
+    <div class="batch-stat"><span>需优先处理</span><strong class="${summary.issueCount ? 'danger' : 'ok'}">${summary.issueCount} 台</strong></div>
+    <div class="batch-stat"><span>平均健康分</span><strong>${summary.hasScore ? summary.avgScore.toFixed(1) : '—'}</strong></div>
+    <div class="batch-stat"><span>总耗时</span><strong>${(summary.elapsedMs / 1000).toFixed(1)} 秒</strong></div>
+  </div>`;
+
+  const rows = summary.priority.map((it) => {
+    const reason = it.status === 'error'
+      ? (it.error ? `巡检失败：${it.error}` : '巡检失败')
+      : (it.warnings[0] || '存在告警项');
+    const meta = [it.nodeRole, it.group].filter(Boolean).map(esc).join(' · ');
+    return `<div class="priority-item sev-${it.status}">
+      <div class="priority-main">
+        <div class="priority-title">${esc(it.name)} <span class="muted">${esc(it.host)}</span></div>
+        <div class="priority-sub">${meta ? meta + ' · ' : ''}${it.status === 'error' ? '健康分 —' : `健康分 ${it.score}`} · ${esc(truncate(reason, 140))}</div>
+      </div>
+      <div class="priority-side">
+        ${statusBadge(it.status)}
+        ${it.inspectionId ? `<a class="btn btn-xs" href="#/inspections/${it.inspectionId}" data-close>查看报告</a>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  const priorityBlock = summary.issueCount
+    ? `<div class="priority-list">${rows}</div>${summary.issueCount > summary.priority.length ? `<div class="batch-note">仅展示前 ${summary.priority.length} 台，更多请到「巡检记录」查看。</div>` : ''}`
+    : '<div class="batch-empty-ok">本次巡检全部正常，没有需要优先处理的服务器。</div>';
+
+  const commonBlock = summary.common.length
+    ? `<div class="batch-section">
+        <h4>共性问题分布</h4>
+        <div class="common-list">${summary.common.map((c) => `<div class="common-row"><span>${esc(c.title)}</span><span class="muted">${c.servers} 台 / ${c.items} 项</span></div>`).join('')}</div>
+      </div>`
+    : '';
+
+  const skippedNote = summary.skipped
+    ? `<div class="batch-note">另有 ${summary.skipped} 台未配置登录方式，已跳过本次批量巡检。</div>`
+    : '';
+
+  const body = `<div class="batch-summary">
+    ${stats}
+    <div class="batch-chips">${distribution}</div>
+    ${skippedNote}
+    <div class="batch-section"><h4>需要优先处理（${summary.issueCount} 台）</h4>${priorityBlock}</div>
+    ${commonBlock}
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <a class="btn btn-primary" href="#/inspections" data-close>查看巡检记录</a>
+      <button type="button" class="btn btn-ghost" data-close>关闭</button>
+    </div>
+  </div>`;
+
+  openModal({ title: '批量巡检结果分析', body, size: 'xl' });
 }
 
 /* ---------------- 巡检记录列表 ---------------- */
