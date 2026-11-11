@@ -346,11 +346,11 @@ ssh root@host 'bash /tmp/install.sh --port 8080'
 
 ### 本地版本控制
 
-- 当前仓库为本地 `main` 分支，未配置远程仓库（受网络限制）。
+- 当前仓库为 `main` 分支，远程 `origin` 已配置为 GitHub（SSH Deploy Key，写权限）。
 - 修改前先 `git status` 确认工作区；重要改动完成后本地提交。
 - 提交信息建议使用下面的前缀；发布时打标签，例如 `git tag -a v1.0.5 -m "release v1.0.5"`。
 - **不要提交**：`dist/`、`server-inspect.exe`、`data/`、日志、真实凭据。它们已在 `.gitignore` 中排除。
-- 网络允许后如需推送 GitHub：`git remote add origin <url>`，先推送 `main`，再 `git push --tags`。
+- 推送：`git push origin main`；发布标签：`git push --tags`。未经用户同意不要 `force push` 或改写历史。
 - `.gitattributes` 已强制 shell/systemd/源码文件使用 LF，避免 Windows 下 checkout 后 Linux 脚本无法执行。
 
 ### 提交信息

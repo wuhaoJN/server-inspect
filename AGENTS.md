@@ -10,7 +10,7 @@
 
 1. 依次阅读：`AGENTS.md` → `DEVELOPMENT.md` → `README.md` → `ROADMAP.md`。
 2. 查看当前版本：`main.go` 中的 `version`、`dist/` 二进制执行 `-version`、线上 `/api/session`。
-3. 查看是否有未完成的改动。**当前目录已初始化本地 Git（`main` 分支，无远程仓库）**：用 `git status` / `git diff` / `git log` 判断遗留修改；重要改动前先本地提交，不要假设存在远程备份。
+3. 查看是否有未完成的改动。**当前目录为 Git 仓库（`main` 分支），远程 `origin` 已配置为 GitHub（SSH Deploy Key）**：用 `git status` / `git diff` / `git log` 判断遗留修改；重要改动前先本地提交；未经用户同意不要 `force push` 或改写历史。
 4. **不要猜测线上服务器地址、账号、密码或部署状态**；需要部署、重启服务、修改防火墙时，必须先获得用户明确指令。
 5. 不要在任何文件、日志、提交信息或回复中写入真实密码、私钥、Cookie、主密钥。
 6. 不确定的业务规则，先读 `DEVELOPMENT.md` 与现有实现，再向用户确认，不要自行扩大范围。
@@ -231,7 +231,7 @@ bash -n deploy/install.sh   # 改安装脚本时
 1. 阅读 `AGENTS.md`、`DEVELOPMENT.md`、`README.md`、`ROADMAP.md`。
 2. 运行 `go test ./...`，确认基线；检查 `gofmt`/`go vet`。
 3. 查看 `main.go` 版本与 `dist/` 发布包，确认线上版本（如果用户提供访问方式）。
-4. 用 `git status` / `git log` 检查是否有未提交改动；当前只有本地仓库、无远程仓库，不要假设可以依赖远端回滚。
+4. 用 `git status` / `git log` 检查是否有未提交改动；远程 `origin` 已配置，但未经用户同意不要强制推送或重写历史。
 5. 向用户确认本次任务范围，不要自行部署或改生产配置。
 6. 按第 5、6、7 节执行；完成后给出变更摘要、验证结果、剩余风险。
 7. 若修改了版本/部署，更新 README/ROADMAP/DEVELOPMENT 中受影响的说明。

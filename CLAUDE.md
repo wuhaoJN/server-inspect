@@ -11,5 +11,5 @@
 - 修改主机/端口后必须要求重新输入密码。
 - 前端只改 `internal/web/static/`，修改后需重新构建二进制。
 - 完成后至少运行：`gofmt -l -w .`、`go vet ./...`、`go test ./...`；`staticcheck` 未安装时用 `go run honnef.co/go/tools/cmd/staticcheck@latest ./...`。
-- 当前目录为本地 Git 仓库（`main`，无远程），修改前用 `git status` 确认工作区，重要改动先提交。
+- 当前目录为 Git 仓库（`main`，远程 `origin` 已配置），修改前用 `git status` 确认工作区，重要改动先提交；不要擅自 force push。
 - 生产变更前先向用户确认；完成后报告版本、验证结果与剩余风险。
