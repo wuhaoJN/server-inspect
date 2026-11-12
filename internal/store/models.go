@@ -4,19 +4,34 @@ import "time"
 
 // Server 表示一台被纳管的目标服务器。PasswordEnc 为 AES-GCM 密文，绝不通过 API 返回。
 type Server struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Host        string    `json:"host"`
-	Port        int       `json:"port"`
-	Username    string    `json:"username"`
-	PasswordEnc string    `json:"-"`
-	HostKey     string    `json:"hostKey,omitempty"`
-	Group       string    `json:"group"`
-	NodeRole    string    `json:"nodeRole"`
-	Tags        string    `json:"tags"`
-	Note        string    `json:"note"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID               int64      `json:"id"`
+	Name             string     `json:"name"`
+	Host             string     `json:"host"`
+	Port             int        `json:"port"`
+	Username         string     `json:"username"`
+	PasswordEnc      string     `json:"-"`
+	HostKey          string     `json:"hostKey,omitempty"`
+	Group            string     `json:"group"`
+	NodeRole         string     `json:"nodeRole"`
+	Tags             string     `json:"tags"`
+	Note             string     `json:"note"`
+	Maintenance      bool       `json:"maintenance"`
+	MaintenanceUntil *time.Time `json:"maintenanceUntil,omitempty"`
+	MaintenanceNote  string     `json:"maintenanceNote,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+}
+
+// InMaintenance 判断服务器在指定时刻是否处于维护状态。
+// MaintenanceUntil 为空表示一直维护到手动结束。
+func (s *Server) InMaintenance(now time.Time) bool {
+	if !s.Maintenance {
+		return false
+	}
+	if s.MaintenanceUntil == nil || s.MaintenanceUntil.IsZero() {
+		return true
+	}
+	return now.Before(*s.MaintenanceUntil)
 }
 
 // ServerView 是服务器列表项，附带最近一次巡检结果摘要。
@@ -70,6 +85,7 @@ type InspectionFilter struct {
 type DashboardData struct {
 	ServerCount      int                 `json:"serverCount"`
 	IssueCount       int                 `json:"issueCount"`
+	MaintenanceCount int                 `json:"maintenanceCount"`
 	TodayCount       int                 `json:"todayCount"`
 	AvgScore         float64             `json:"avgScore"`
 	StatusCounts     map[string]int      `json:"statusCounts"`

@@ -389,6 +389,63 @@ func TestStoreSchedules(t *testing.T) {
 	}
 }
 
+func TestStoreServerMaintenance(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	sv := &Server{Name: "maint-01", Host: "10.0.0.9", Port: 22, Username: "root", PasswordEnc: "cipher"}
+	if err := st.CreateServer(sv); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	now := time.Now().UTC()
+	until := now.Add(2 * time.Hour)
+	if err := st.SetServerMaintenance(sv.ID, &until, "硬件更换"); err != nil {
+		t.Fatalf("SetServerMaintenance: %v", err)
+	}
+	got, err := st.GetServer(sv.ID)
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if !got.Maintenance || got.MaintenanceUntil == nil || got.MaintenanceNote != "硬件更换" {
+		t.Fatalf("unexpected maintenance: %#v", got)
+	}
+	if !got.InMaintenance(now) {
+		t.Fatal("expected InMaintenance true")
+	}
+	if got.InMaintenance(until.Add(time.Minute)) {
+		t.Fatal("expected expired maintenance to be false")
+	}
+
+	views, err := st.ListServerViews()
+	if err != nil || len(views) != 1 || !views[0].Maintenance || views[0].MaintenanceNote != "硬件更换" {
+		t.Fatalf("ListServerViews: %v %#v", err, views)
+	}
+
+	// 无结束时间表示持续维护。
+	if err := st.SetServerMaintenance(sv.ID, nil, "手动结束"); err != nil {
+		t.Fatalf("SetServerMaintenance nil: %v", err)
+	}
+	got, _ = st.GetServer(sv.ID)
+	if !got.Maintenance || got.MaintenanceUntil != nil || !got.InMaintenance(now.Add(1000*time.Hour)) {
+		t.Fatalf("unexpected indefinite maintenance: %#v", got)
+	}
+
+	if err := st.ClearServerMaintenance(sv.ID); err != nil {
+		t.Fatalf("ClearServerMaintenance: %v", err)
+	}
+	got, _ = st.GetServer(sv.ID)
+	if got.Maintenance || got.MaintenanceUntil != nil || got.MaintenanceNote != "" {
+		t.Fatalf("maintenance not cleared: %#v", got)
+	}
+	if err := st.ClearServerMaintenance(99999); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestStoreAdmin(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(filepath.Join(dir, "test.db"))

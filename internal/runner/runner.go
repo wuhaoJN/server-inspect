@@ -135,8 +135,17 @@ func (r *Runner) recordFailure(srv *store.Server, started time.Time, message str
 	return rec, nil
 }
 
+// BatchOptions 描述一次批量巡检的触发来源与跳过统计。
+type BatchOptions struct {
+	Trigger            string
+	ScheduleID         int64
+	Name               string
+	Skipped            int
+	MaintenanceSkipped int
+}
+
 // RunBatch 并发执行一组服务器的巡检并写入批量记录。
-func (r *Runner) RunBatch(ctx context.Context, servers []*store.Server, trigger string, scheduleID int64, name string) (*store.Batch, error) {
+func (r *Runner) RunBatch(ctx context.Context, servers []*store.Server, opts BatchOptions) (*store.Batch, error) {
 	started := time.Now()
 	serverMap := make(map[int64]*store.Server, len(servers))
 	for _, srv := range servers {
@@ -189,15 +198,16 @@ func (r *Runner) RunBatch(ctx context.Context, servers []*store.Server, trigger 
 	wg.Wait()
 
 	finished := time.Now()
-	summary := batch.Build(records, serverMap, failures, 0, finished.Sub(started).Milliseconds())
+	summary := batch.Build(records, serverMap, failures, opts.Skipped, finished.Sub(started).Milliseconds())
+	summary.MaintenanceSkipped = opts.MaintenanceSkipped
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
 		return nil, fmt.Errorf("序列化批量分析失败: %w", err)
 	}
 	rec := &store.Batch{
-		Trigger:       trigger,
-		ScheduleID:    scheduleID,
-		Name:          name,
+		Trigger:       opts.Trigger,
+		ScheduleID:    opts.ScheduleID,
+		Name:          opts.Name,
 		StartedAt:     started.UTC(),
 		FinishedAt:    finished.UTC(),
 		ServerCount:   len(servers),
@@ -207,6 +217,7 @@ func (r *Runner) RunBatch(ctx context.Context, servers []*store.Server, trigger 
 		ErrorCount:    summary.Counts["error"],
 		IssueCount:    summary.IssueCount,
 		AvgScore:      summary.AvgScore,
+		Skipped:       opts.Skipped,
 		ElapsedMS:     finished.Sub(started).Milliseconds(),
 		SummaryJSON:   string(summaryJSON),
 	}

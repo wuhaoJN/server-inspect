@@ -16,8 +16,8 @@ import (
 // ErrAlreadyRunning 表示同一计划正在执行。
 var ErrAlreadyRunning = errors.New("该计划正在执行中")
 
-// ErrNoTargets 表示计划范围内没有已配置登录方式的服务器。
-var ErrNoTargets = errors.New("计划范围内没有已配置登录方式的服务器")
+// ErrNoTargets 表示计划范围内没有可巡检的服务器。
+var ErrNoTargets = errors.New("计划范围内没有可巡检的服务器（未配置登录或在维护中）")
 
 // Scheduler 轮询到期计划并通过 runner 执行批量巡检。
 type Scheduler struct {
@@ -107,67 +107,95 @@ func (s *Scheduler) execute(ctx context.Context, sch *store.Schedule, manual boo
 		return nil, err
 	}
 
-	servers, err := s.Targets(sch)
+	stats, err := s.Resolve(sch)
 	if err != nil {
 		_ = s.store.UpdateScheduleRun(sch.ID, now, next, 0, "error", err.Error())
 		return nil, err
 	}
-	if len(servers) == 0 {
+	if len(stats.Servers) == 0 {
 		_ = s.store.UpdateScheduleRun(sch.ID, now, next, 0, "skipped", ErrNoTargets.Error())
 		return nil, ErrNoTargets
 	}
 
-	batchRec, err := s.runner.RunBatch(ctx, servers, "scheduled", sch.ID, sch.Name)
+	batchRec, err := s.runner.RunBatch(ctx, stats.Servers, runner.BatchOptions{
+		Trigger:            "scheduled",
+		ScheduleID:         sch.ID,
+		Name:               sch.Name,
+		Skipped:            stats.SkippedUnconfigured + stats.SkippedMaintenance,
+		MaintenanceSkipped: stats.SkippedMaintenance,
+	})
 	if err != nil {
 		_ = s.store.UpdateScheduleRun(sch.ID, now, next, 0, "error", err.Error())
 		return nil, err
 	}
 	status := batchStatus(batchRec)
 	_ = s.store.UpdateScheduleRun(sch.ID, now, next, batchRec.ID, status, "")
-	s.log.Info("定时计划执行完成", "schedule", sch.Name, "batch", batchRec.ID, "servers", len(servers), "status", status, "manual", manual)
+	s.log.Info("定时计划执行完成", "schedule", sch.Name, "batch", batchRec.ID, "servers", len(stats.Servers),
+		"skippedMaintenance", stats.SkippedMaintenance, "skippedUnconfigured", stats.SkippedUnconfigured,
+		"status", status, "manual", manual)
 	return batchRec, nil
 }
 
-// Targets 解析计划范围，只返回已配置登录方式的服务器。
-func (s *Scheduler) Targets(sch *store.Schedule) ([]*store.Server, error) {
+// TargetStats 是计划范围解析结果，包含可执行目标与跳过数量。
+type TargetStats struct {
+	Servers             []*store.Server
+	SkippedUnconfigured int
+	SkippedMaintenance  int
+}
+
+// Resolve 解析计划范围：排除未配置登录与维护中的服务器，并统计跳过数量。
+func (s *Scheduler) Resolve(sch *store.Schedule) (TargetStats, error) {
 	all, err := s.store.ListServers()
 	if err != nil {
-		return nil, err
+		return TargetStats{}, err
 	}
-	configured := make([]*store.Server, 0, len(all))
-	for i := range all {
-		if all[i].Username != "" && all[i].PasswordEnc != "" {
-			configured = append(configured, &all[i])
-		}
-	}
-	switch sch.ScopeType {
-	case "group":
-		out := make([]*store.Server, 0)
-		for _, srv := range configured {
-			if srv.Group == sch.ScopeValue {
-				out = append(out, srv)
-			}
-		}
-		return out, nil
-	case "custom":
+	now := time.Now()
+
+	var wanted map[int64]bool
+	if sch.ScopeType == "custom" {
 		ids, err := s.store.GetScheduleServerIDs(sch.ID)
 		if err != nil {
-			return nil, err
+			return TargetStats{}, err
 		}
-		wanted := make(map[int64]bool, len(ids))
+		wanted = make(map[int64]bool, len(ids))
 		for _, id := range ids {
 			wanted[id] = true
 		}
-		out := make([]*store.Server, 0, len(ids))
-		for _, srv := range configured {
-			if wanted[srv.ID] {
-				out = append(out, srv)
+	}
+
+	stats := TargetStats{Servers: make([]*store.Server, 0, len(all))}
+	for i := range all {
+		srv := &all[i]
+		switch sch.ScopeType {
+		case "group":
+			if srv.Group != sch.ScopeValue {
+				continue
+			}
+		case "custom":
+			if !wanted[srv.ID] {
+				continue
 			}
 		}
-		return out, nil
-	default:
-		return configured, nil
+		if srv.Username == "" || srv.PasswordEnc == "" {
+			stats.SkippedUnconfigured++
+			continue
+		}
+		if srv.InMaintenance(now) {
+			stats.SkippedMaintenance++
+			continue
+		}
+		stats.Servers = append(stats.Servers, srv)
 	}
+	return stats, nil
+}
+
+// Targets 解析计划范围，只返回当前可巡检的服务器。
+func (s *Scheduler) Targets(sch *store.Schedule) ([]*store.Server, error) {
+	stats, err := s.Resolve(sch)
+	if err != nil {
+		return nil, err
+	}
+	return stats.Servers, nil
 }
 
 // NextRun 根据频率计算下一次执行时间（使用服务器本地时区）。

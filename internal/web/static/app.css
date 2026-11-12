@@ -143,6 +143,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .badge-warning { color: var(--warning); background: var(--warning-bg); }
 .badge-critical { color: var(--danger); background: var(--danger-bg); }
 .badge-skipped, .badge-muted { color: var(--skipped); background: var(--skipped-bg); }
+.badge-maintenance { color: #7c3aed; background: #f3e8ff; }
+
+tr.row-maintenance td { background: #faf8ff; }
+tr.row-maintenance .cell-main { color: #6b7280; }
+.maint-text { color: #7c3aed; font-size: 12px; }
 
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); }

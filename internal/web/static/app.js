@@ -13,6 +13,7 @@ const state = {
   servers: [],
   route: { name: 'dashboard', id: '' },
   serverQuery: '',
+  serverFilter: 'all',
   selected: new Set(),
   schedules: [],
   serverDetail: null,
@@ -27,8 +28,32 @@ const STATUS = {
   skipped: { text: '跳过', cls: 'skipped' },
   error: { text: '失败', cls: 'critical' },
   pending: { text: '待配置', cls: 'skipped' },
+  maintenance: { text: '维护中', cls: 'maintenance' },
   '': { text: '未巡检', cls: 'muted' },
 };
+
+// 是否处于有效维护窗口（结束时间已过则视为已恢复）。
+function isMaintenance(v) {
+  if (!v || !v.maintenance) return false;
+  if (!v.maintenanceUntil) return true;
+  const t = new Date(v.maintenanceUntil);
+  return !Number.isNaN(t.getTime()) && t > new Date();
+}
+
+function maintenanceLabel(v) {
+  if (!v || !v.maintenanceUntil) return '维护中 · 手动结束';
+  const t = new Date(v.maintenanceUntil);
+  if (Number.isNaN(t.getTime())) return '维护中';
+  return `维护至 ${t.toLocaleString('zh-CN', { hour12: false })}`;
+}
+
+function toLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 /* ---------------- 工具函数 ---------------- */
 
@@ -476,7 +501,7 @@ async function viewDashboard() {
   const pendingCount = (d.servers || []).filter((v) => !v.configured).length;
   const cards = [
     { label: '纳管服务器', value: d.serverCount, hint: pendingCount ? `${pendingCount} 台待配置登录方式` : `${d.uninspectedCount || 0} 台尚未巡检`, cls: 'indigo', icon: '▤' },
-    { label: '存在异常', value: d.issueCount, hint: '最近一次巡检为警告 / 严重 / 失败', cls: d.issueCount ? 'danger' : 'ok', icon: '!' },
+    { label: '存在异常', value: d.issueCount, hint: d.maintenanceCount ? `${d.maintenanceCount} 台维护中，不计入异常` : '最近一次巡检为警告 / 严重 / 失败', cls: d.issueCount ? 'danger' : 'ok', icon: '!' },
     { label: '今日巡检', value: d.todayCount, hint: '今日累计执行次数', cls: 'blue', icon: '↻' },
     { label: '近 7 天平均健康分', value: avg, hint: '满分 100 分', cls: 'ok', icon: '◎' },
   ];
@@ -490,7 +515,8 @@ async function viewDashboard() {
 
   const serverRows = (d.servers || []).length
     ? d.servers.map((v) => {
-      const displayStatus = v.configured ? v.lastStatus : 'pending';
+      const inMaint = isMaintenance(v);
+      const displayStatus = inMaint ? 'maintenance' : (v.configured ? v.lastStatus : 'pending');
       const hasReport = v.configured && v.lastInspectionId;
       return `
       <a class="mini-item" href="#/servers/${v.id}">
@@ -499,7 +525,7 @@ async function viewDashboard() {
           <div class="mini-sub">${esc(v.username || '未配置账号')}@${esc(v.host)}:${v.port}${v.nodeRole ? ' · ' + esc(v.nodeRole) : ''}${v.group ? ' · ' + esc(v.group) : ''}</div>
         </div>
         <div>${statusBadge(displayStatus)}</div>
-        <div class="mini-side"><strong>${hasReport ? v.lastScore + ' 分' : '—'}</strong>${v.configured ? fmtRelative(v.lastAt) : '待配置登录'}</div>
+        <div class="mini-side"><strong>${hasReport ? v.lastScore + ' 分' : '—'}</strong>${inMaint ? '维护中' : (v.configured ? fmtRelative(v.lastAt) : '待配置登录')}</div>
       </a>`;
     }).join('')
     : `<div class="empty">还没有纳管服务器<br><br><a class="btn btn-primary" href="#/servers">＋ 添加服务器</a></div>`;
@@ -560,6 +586,11 @@ async function viewServers() {
   view.innerHTML = `
     <div class="toolbar">
       <input class="input" id="serverSearch" placeholder="搜索名称 / 主机 / 分组 / 标签" value="${esc(state.serverQuery)}">
+      <select class="select" id="serverFilter" style="max-width:140px">
+        <option value="all" ${state.serverFilter === 'all' ? 'selected' : ''}>全部服务器</option>
+        <option value="maintenance" ${state.serverFilter === 'maintenance' ? 'selected' : ''}>仅维护中</option>
+        <option value="issue" ${state.serverFilter === 'issue' ? 'selected' : ''}>仅异常</option>
+      </select>
       <div class="toolbar-right">
         <div class="batch-progress" id="batchProgress">
           <span class="spinner"></span><span id="batchText">0 / 0</span>
@@ -574,6 +605,10 @@ async function viewServers() {
 
   document.getElementById('serverSearch').addEventListener('input', (e) => {
     state.serverQuery = e.target.value;
+    renderServersTable();
+  });
+  document.getElementById('serverFilter').addEventListener('change', (e) => {
+    state.serverFilter = e.target.value;
     renderServersTable();
   });
 
@@ -592,9 +627,16 @@ async function loadServers() {
 }
 
 function filteredServers() {
+  let list = state.servers;
+  if (state.serverFilter === 'maintenance') {
+    list = list.filter(isMaintenance);
+  } else if (state.serverFilter === 'issue') {
+    list = list.filter((v) => v.configured && !isMaintenance(v)
+      && ['warning', 'critical', 'error'].includes(v.lastStatus));
+  }
   const q = state.serverQuery.trim().toLowerCase();
-  if (!q) return state.servers;
-  return state.servers.filter((v) =>
+  if (!q) return list;
+  return list.filter((v) =>
     [v.name, v.host, v.group, v.nodeRole, v.tags, v.username, v.note].some((x) => (x || '').toLowerCase().includes(q)));
 }
 
@@ -614,17 +656,21 @@ function renderServersTable() {
     return;
   }
 
-  const allSelected = list.filter((v) => v.configured);
+  const allSelected = list.filter((v) => v.configured && !isMaintenance(v));
   const allChecked = allSelected.length > 0 && allSelected.every((v) => state.selected.has(v.id));
   const rows = list.map((v) => {
-    const displayStatus = v.configured ? v.lastStatus : 'pending';
+    const inMaint = isMaintenance(v);
+    const displayStatus = inMaint ? 'maintenance' : (v.configured ? v.lastStatus : 'pending');
     const hasReport = v.configured && v.lastInspectionId;
     const score = hasReport
       ? `<span class="score-pill ${scoreClass(v.lastScore, v.lastStatus)}">${v.lastScore}</span>`
       : '<span class="muted">—</span>';
-    const lastSeen = !v.configured ? '待配置登录' : (v.lastAt ? fmtRelative(v.lastAt) : '从未巡检');
-    return `<tr>
-      <td class="check-cell"><input type="checkbox" class="row-check" value="${v.id}" ${state.selected.has(v.id) ? 'checked' : ''} ${v.configured ? '' : 'disabled title="请先配置登录方式"'} aria-label="选择 ${esc(v.name)}"></td>
+    const lastSeen = inMaint
+      ? `<span class="maint-text" title="${esc(v.maintenanceNote || '')}">${esc(maintenanceLabel(v))}</span>`
+      : (!v.configured ? '待配置登录' : (v.lastAt ? fmtRelative(v.lastAt) : '从未巡检'));
+    const checkTitle = !v.configured ? '请先配置登录方式' : (inMaint ? '维护中的服务器不会被批量巡检' : '');
+    return `<tr class="${inMaint ? 'row-maintenance' : ''}">
+      <td class="check-cell"><input type="checkbox" class="row-check" value="${v.id}" ${state.selected.has(v.id) ? 'checked' : ''} ${(v.configured && !inMaint) ? '' : 'disabled'} ${checkTitle ? `title="${esc(checkTitle)}"` : ''} aria-label="选择 ${esc(v.name)}"></td>
       <td>
         <a class="cell-main" href="#/servers/${v.id}">${esc(v.name)}</a>
         <div class="cell-sub">${esc(v.username || '未配置账号')}@${esc(v.host)}:${v.port}</div>
@@ -637,7 +683,7 @@ function renderServersTable() {
       <td class="right">
         <div class="row-actions">
           ${v.configured
-            ? `<button class="btn btn-xs btn-primary" data-action="inspect" data-id="${v.id}">巡检</button>`
+            ? `<button class="btn btn-xs btn-primary" data-action="inspect" data-id="${v.id}" ${inMaint ? 'title="服务器维护中，巡检可能失败"' : ''}>巡检</button>`
             : `<button class="btn btn-xs btn-primary" data-action="edit-server" data-id="${v.id}">配置登录</button>`}
           <button type="button" class="btn btn-xs row-menu-btn" data-action="row-menu" data-id="${v.id}" data-menu-key="${v.id}" aria-haspopup="menu">更多 ▾</button>
         </div>
@@ -1128,18 +1174,96 @@ async function inspectServer(id, btn) {
   }
 }
 
+async function refreshAfterMaintenance(id) {
+  await loadServers();
+  if (state.route.name === 'servers' && state.route.id) {
+    await viewServerDetail(state.route.id);
+  } else if (state.route.name === 'servers') {
+    renderServersTable();
+  } else if (state.route.name === 'dashboard') {
+    onRoute();
+  }
+}
+
+function openMaintenanceForm(srv) {
+  if (!srv) return;
+  const untilValue = srv.maintenanceUntil ? toLocalInput(srv.maintenanceUntil) : '';
+  const noteValue = srv.maintenanceNote || '';
+  const body = `
+  <form id="maintenanceForm" class="form-grid" autocomplete="off">
+    <div class="scan-tip">维护中的服务器会被批量巡检和定时任务自动跳过，不计入异常统计。到达结束时间后自动恢复参与巡检。</div>
+    <div class="field">
+      <label class="label" for="maintUntil">维护结束时间（可选）</label>
+      <input class="input" id="maintUntil" type="datetime-local" value="${esc(untilValue)}">
+      <div class="help">留空表示一直维护，直到手动结束。</div>
+    </div>
+    <div class="field">
+      <label class="label" for="maintNote">维护原因（可选）</label>
+      <input class="input" id="maintNote" maxlength="200" value="${esc(noteValue)}" placeholder="例如：硬件更换 / 系统重装 / 机房搬迁">
+    </div>
+    <div class="modal-foot">
+      <div class="spacer"></div>
+      <button type="button" class="btn btn-ghost" data-close>取消</button>
+      <button type="submit" class="btn btn-primary">标记维护中</button>
+    </div>
+  </form>`;
+  const close = openModal({ title: `标记维护中 · ${srv.name}`, body });
+  const form = document.getElementById('maintenanceForm');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const raw = document.getElementById('maintUntil').value;
+    let until = '';
+    if (raw) {
+      const t = new Date(raw);
+      if (Number.isNaN(t.getTime())) {
+        toast('维护结束时间格式无效', 'warn');
+        return;
+      }
+      if (t <= new Date()) {
+        toast('维护结束时间必须晚于当前时间', 'warn');
+        return;
+      }
+      until = t.toISOString();
+    }
+    const note = document.getElementById('maintNote').value.trim();
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner spinner-light"></span> 保存中…';
+    try {
+      await api(`/api/servers/${srv.id}/maintenance`, {
+        method: 'POST',
+        body: { enabled: true, until, note },
+      });
+      close();
+      toast('已标记为维护中', 'success');
+      await refreshAfterMaintenance(srv.id);
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '标记维护中';
+    }
+  });
+}
+
 async function batchInspect(btn) {
   const selectedIDs = [...state.selected].filter((id) => state.servers.some((v) => v.id === id));
-  const ids = selectedIDs.filter((id) => {
+  const maintenanceIDs = selectedIDs.filter((id) => isMaintenance(state.servers.find((v) => v.id === id)));
+  const rest = selectedIDs.filter((id) => !maintenanceIDs.includes(id));
+  const ids = rest.filter((id) => {
     const srv = state.servers.find((v) => v.id === id);
     return srv && srv.configured;
   });
-  const skipped = selectedIDs.length - ids.length;
+  const skipped = rest.length - ids.length;
+  const maintenanceSkipped = maintenanceIDs.length;
+  if (maintenanceSkipped > 0) {
+    toast(`已跳过 ${maintenanceSkipped} 台维护中的服务器`, 'info');
+  }
   if (skipped > 0) {
     toast(`已跳过 ${skipped} 台未配置登录方式的服务器`, 'warn');
   }
   if (!ids.length) {
-    toast('请先勾选已配置登录方式的服务器', 'warn');
+    toast('没有可巡检的服务器（请检查登录配置或维护状态）', 'warn');
     if (btn) btn.disabled = false;
     return;
   }
@@ -1180,7 +1304,7 @@ async function batchInspect(btn) {
   };
   await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
 
-  const summary = buildBatchSummary(results, skipped, Date.now() - startedAt);
+  const summary = buildBatchSummary(results, skipped, maintenanceSkipped, Date.now() - startedAt);
   if (box) box.classList.remove('show');
   if (btn) btn.disabled = false;
 
@@ -1205,6 +1329,7 @@ async function batchInspect(btn) {
         inspectionIds,
         failures,
         skipped,
+        maintenanceSkipped,
         elapsedMs: summary.elapsedMs,
       },
     });
@@ -1222,7 +1347,7 @@ async function batchInspect(btn) {
   }
 }
 
-function buildBatchSummary(results, skipped, elapsedMs) {
+function buildBatchSummary(results, skipped, maintenanceSkipped, elapsedMs) {
   const items = results.map((r) => {
     const rec = r.inspection || {};
     const report = r.report || null;
@@ -1281,6 +1406,7 @@ function buildBatchSummary(results, skipped, elapsedMs) {
     issueCount: priority.length,
     common,
     skipped,
+    maintenanceSkipped,
     elapsedMs,
   };
 }
@@ -1329,8 +1455,12 @@ function openBatchSummary(summary) {
       </div>`
     : '';
 
-  const skippedNote = summary.skipped
-    ? `<div class="batch-note">另有 ${summary.skipped} 台未配置登录方式，已跳过本次批量巡检。</div>`
+  const unconfiguredSkipped = Math.max(0, (Number(summary.skipped) || 0) - (Number(summary.maintenanceSkipped) || 0));
+  const skipParts = [];
+  if (summary.maintenanceSkipped) skipParts.push(`${summary.maintenanceSkipped} 台维护中`);
+  if (unconfiguredSkipped) skipParts.push(`${unconfiguredSkipped} 台未配置登录方式`);
+  const skippedNote = skipParts.length
+    ? `<div class="batch-note">另有 ${skipParts.join('、')}，已跳过本次批量巡检。</div>`
     : '';
 
   const body = `<div class="batch-summary">
@@ -1779,11 +1909,14 @@ function renderServerDetail() {
   const ins = d.latest && d.latest.inspection;
   const rep = d.latest && d.latest.report;
   const status = s.configured ? (ins ? ins.status : '') : 'pending';
-  const showStatus = s.configured ? status : 'pending';
+  const inMaint = isMaintenance(s);
+  const showStatus = inMaint ? 'maintenance' : (s.configured ? status : 'pending');
 
   const infoItems = [
     ['登录用户', s.username || '未配置'],
     ['登录配置', s.configured ? '已配置' : '待配置'],
+    ['维护状态', inMaint ? maintenanceLabel(s) : (s.maintenance ? '维护已结束' : '正常')],
+    ['维护原因', s.maintenanceNote || '—'],
     ['节点职责', s.nodeRole || '—'],
     ['分组', s.group || '—'],
     ['标签', s.tags || '—'],
@@ -1842,12 +1975,15 @@ function renderServerDetail() {
       <div>
         <a class="link" href="#/servers">← 服务器列表</a>
         <div class="report-title" style="margin-top:8px">${esc(s.name)} <span class="muted">${esc(s.host)}:${s.port}</span></div>
-        <div class="report-meta">${statusBadge(showStatus)} ${s.nodeRole ? `<span class="chip">${esc(s.nodeRole)}</span>` : ''}${s.group ? `<span class="chip">${esc(s.group)}</span>` : ''}${s.tags ? `<span class="muted">${esc(s.tags)}</span>` : ''}</div>
+        <div class="report-meta">${statusBadge(showStatus)} ${inMaint ? `<span class="muted">${esc(maintenanceLabel(s))}</span>` : ''} ${s.nodeRole ? `<span class="chip">${esc(s.nodeRole)}</span>` : ''}${s.group ? `<span class="chip">${esc(s.group)}</span>` : ''}${s.tags ? `<span class="muted">${esc(s.tags)}</span>` : ''}</div>
       </div>
       <div class="report-actions">
         ${s.configured
           ? `<button class="btn btn-primary" data-action="inspect" data-id="${s.id}">立即巡检</button>`
           : `<button class="btn btn-primary" data-action="edit-server" data-id="${s.id}">配置登录</button>`}
+        ${inMaint || s.maintenance
+          ? `<button class="btn" data-action="clear-maintenance" data-id="${s.id}">${inMaint ? '结束维护' : '清除维护状态'}</button>`
+          : `<button class="btn" data-action="mark-maintenance" data-id="${s.id}">标记维护</button>`}
         <button class="btn" data-action="edit-server" data-id="${s.id}">编辑</button>
         ${s.lastInspectionId ? `<a class="btn btn-ghost" href="#/inspections/${s.lastInspectionId}">最新报告</a>` : ''}
       </div>
@@ -2252,7 +2388,7 @@ async function loadComparison(inspectionId) {
 document.addEventListener('change', (event) => {
   const target = event.target;
   if (target.id === 'selectAll') {
-    const list = filteredServers().filter((v) => v.configured);
+    const list = filteredServers().filter((v) => v.configured && !isMaintenance(v));
     if (target.checked) list.forEach((v) => state.selected.add(v.id));
     else list.forEach((v) => state.selected.delete(v.id));
     renderServersTable();
@@ -2264,7 +2400,7 @@ document.addEventListener('change', (event) => {
     else state.selected.delete(id);
     const all = document.getElementById('selectAll');
     if (all) {
-      const list = filteredServers().filter((v) => v.configured);
+      const list = filteredServers().filter((v) => v.configured && !isMaintenance(v));
       all.checked = list.length > 0 && list.every((v) => state.selected.has(v.id));
     }
     updateBatchUI();
@@ -2285,7 +2421,14 @@ document.addEventListener('click', async (event) => {
     case 'row-menu': {
       const srv = state.servers.find((v) => v.id === id);
       if (!srv) break;
+      const inMaint = isMaintenance(srv);
+      const hasMaintFlag = !!srv.maintenance;
       openRowMenu(el, [
+        {
+          label: inMaint ? '结束维护' : (hasMaintFlag ? '清除维护状态' : '标记维护中'),
+          action: (inMaint || hasMaintFlag) ? 'clear-maintenance' : 'mark-maintenance',
+          id,
+        },
         { label: '编辑服务器', action: 'edit-server', id },
         { label: '删除服务器', action: 'delete-server', id, danger: true },
       ]);
@@ -2298,7 +2441,35 @@ document.addEventListener('click', async (event) => {
         openServerForm(srv);
         break;
       }
+      if (srv && isMaintenance(srv)) {
+        confirmAction({
+          title: '服务器维护中',
+          message: `服务器 <strong>${esc(srv.name)}</strong> 当前处于维护状态，可能已关机，巡检很可能失败。<br><br>仍要立即巡检吗？`,
+          confirmText: '仍然巡检',
+          onConfirm: () => inspectServer(id, null),
+        });
+        break;
+      }
       inspectServer(id, el);
+      break;
+    }
+    case 'mark-maintenance': {
+      const srv = state.servers.find((v) => v.id === id);
+      if (srv) openMaintenanceForm(srv);
+      break;
+    }
+    case 'clear-maintenance': {
+      const srv = state.servers.find((v) => v.id === id);
+      confirmAction({
+        title: '结束维护',
+        message: `确定结束服务器 <strong>${esc(srv ? srv.name : '#' + id)}</strong> 的维护状态吗？<br>结束后会恢复参与批量巡检和定时任务。`,
+        confirmText: '结束维护',
+        onConfirm: async () => {
+          await api(`/api/servers/${id}/maintenance`, { method: 'POST', body: { enabled: false } });
+          toast('已结束维护状态', 'success');
+          await refreshAfterMaintenance(id);
+        },
+      });
       break;
     }
     case 'scan-network':

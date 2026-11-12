@@ -10,6 +10,7 @@ import (
 func (s *Store) GetServerView(id int64) (*ServerView, error) {
 	const q = `
 		SELECT s.id, s.name, s.host, s.port, s.username, s.host_key, s.group_name, s.node_role, s.tags, s.note,
+		       s.maintenance, s.maintenance_until, s.maintenance_note,
 		       s.created_at, s.updated_at,
 		       CASE WHEN s.username <> '' AND s.password <> '' THEN 1 ELSE 0 END,
 		       i.id, i.status, i.score, i.started_at
@@ -19,20 +20,30 @@ func (s *Store) GetServerView(id int64) (*ServerView, error) {
 		)
 		WHERE s.id = ?`
 	var (
-		v                  ServerView
-		created, updated   string
-		configured         int
-		lastID, lastScore  sql.NullInt64
-		lastStatus, lastAt sql.NullString
+		v                           ServerView
+		maintenance                 int
+		maintenanceUntil, maintNote string
+		created, updated            string
+		configured                  int
+		lastID, lastScore           sql.NullInt64
+		lastStatus, lastAt          sql.NullString
 	)
 	err := s.db.QueryRow(q, id).Scan(&v.ID, &v.Name, &v.Host, &v.Port, &v.Username, &v.HostKey,
-		&v.Group, &v.NodeRole, &v.Tags, &v.Note, &created, &updated, &configured,
+		&v.Group, &v.NodeRole, &v.Tags, &v.Note,
+		&maintenance, &maintenanceUntil, &maintNote, &created, &updated, &configured,
 		&lastID, &lastStatus, &lastScore, &lastAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	v.Maintenance = maintenance == 1
+	v.MaintenanceNote = maintNote
+	if maintenanceUntil != "" {
+		if t := parseTime(maintenanceUntil); !t.IsZero() {
+			v.MaintenanceUntil = &t
+		}
 	}
 	v.Configured = configured == 1
 	v.CreatedAt = parseTime(created)

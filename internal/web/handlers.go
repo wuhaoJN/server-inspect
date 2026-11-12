@@ -511,6 +511,84 @@ func (s *Server) handleServerInspect(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]any{"inspection": rec, "report": report})
 }
 
+type maintenanceInput struct {
+	Enabled bool   `json:"enabled"`
+	Until   string `json:"until"`
+	Note    string `json:"note"`
+}
+
+// handleServerMaintenance 标记或结束服务器维护状态。
+// 维护中的服务器会被批量巡检与定时任务自动跳过，避免关机维保被记为失败。
+func (s *Server) handleServerMaintenance(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeFail(w, http.StatusBadRequest, "服务器 ID 无效")
+		return
+	}
+	var in maintenanceInput
+	if err := readJSON(r, &in); err != nil {
+		writeFail(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	in.Note = strings.TrimSpace(in.Note)
+	if len(in.Note) > 200 {
+		writeFail(w, http.StatusBadRequest, "维护原因不能超过 200 个字符")
+		return
+	}
+
+	if !in.Enabled {
+		if err := s.store.ClearServerMaintenance(id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeFail(w, http.StatusNotFound, "服务器不存在")
+				return
+			}
+			writeFail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		srv, err := s.store.GetServer(id)
+		if err != nil {
+			writeFail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.log.Info("结束服务器维护", "id", id, "name", srv.Name)
+		writeOK(w, srv)
+		return
+	}
+
+	var until *time.Time
+	if strings.TrimSpace(in.Until) != "" {
+		t, err := time.Parse(time.RFC3339, strings.TrimSpace(in.Until))
+		if err != nil {
+			writeFail(w, http.StatusBadRequest, "维护结束时间格式无效")
+			return
+		}
+		if !t.After(time.Now()) {
+			writeFail(w, http.StatusBadRequest, "维护结束时间必须晚于当前时间")
+			return
+		}
+		until = &t
+	}
+	if err := s.store.SetServerMaintenance(id, until, in.Note); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeFail(w, http.StatusNotFound, "服务器不存在")
+			return
+		}
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	srv, err := s.store.GetServer(id)
+	if err != nil {
+		writeFail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	untilText := "手动结束"
+	if srv.MaintenanceUntil != nil {
+		untilText = srv.MaintenanceUntil.UTC().Format(time.RFC3339)
+	}
+	s.log.Info("标记服务器维护", "id", id, "name", srv.Name, "until", untilText)
+	writeOK(w, srv)
+}
+
 // ---------- 巡检记录 / 概览 ----------
 
 func (s *Server) handleInspectionsList(w http.ResponseWriter, r *http.Request) {
@@ -602,7 +680,13 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		Servers:      views,
 		StatusCounts: map[string]int{},
 	}
+	now := time.Now()
 	for _, v := range views {
+		if v.InMaintenance(now) {
+			// 维护中的机器可能人为关机，不计入异常与未巡检。
+			data.MaintenanceCount++
+			continue
+		}
 		switch v.LastStatus {
 		case "warning", "critical", "error":
 			data.IssueCount++
@@ -611,7 +695,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	if data.TodayCount, err = s.store.CountInspectionsSince(today); err != nil {
 		s.log.Warn("统计今日巡检次数失败", "error", err)
@@ -762,10 +845,11 @@ func (s *Server) handleInspectionCompare(w http.ResponseWriter, r *http.Request)
 const maxBatchItems = 4096
 
 type batchCreateInput struct {
-	InspectionIDs []int64         `json:"inspectionIds"`
-	Failures      []batch.Failure `json:"failures"`
-	Skipped       int             `json:"skipped"`
-	ElapsedMS     int64           `json:"elapsedMs"`
+	InspectionIDs      []int64         `json:"inspectionIds"`
+	Failures           []batch.Failure `json:"failures"`
+	Skipped            int             `json:"skipped"`
+	MaintenanceSkipped int             `json:"maintenanceSkipped"`
+	ElapsedMS          int64           `json:"elapsedMs"`
 }
 
 func (s *Server) handleBatchesList(w http.ResponseWriter, r *http.Request) {
@@ -804,6 +888,9 @@ func (s *Server) handleBatchCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Skipped < 0 {
 		req.Skipped = 0
+	}
+	if req.MaintenanceSkipped < 0 {
+		req.MaintenanceSkipped = 0
 	}
 	if req.ElapsedMS < 0 {
 		req.ElapsedMS = 0
@@ -862,6 +949,7 @@ func (s *Server) handleBatchCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	summary := batch.Build(records, serverMap, req.Failures, req.Skipped, req.ElapsedMS)
+	summary.MaintenanceSkipped = req.MaintenanceSkipped
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {
 		writeFail(w, http.StatusInternalServerError, "生成批量分析失败")
@@ -879,7 +967,7 @@ func (s *Server) handleBatchCreate(w http.ResponseWriter, r *http.Request) {
 		ErrorCount:    summary.Counts["error"],
 		IssueCount:    summary.IssueCount,
 		AvgScore:      summary.AvgScore,
-		Skipped:       req.Skipped,
+		Skipped:       req.Skipped + req.MaintenanceSkipped,
 		ElapsedMS:     req.ElapsedMS,
 		SummaryJSON:   string(summaryJSON),
 	}

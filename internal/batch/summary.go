@@ -44,15 +44,16 @@ type Common struct {
 
 // Summary 是批量巡检分析结果，字段与前端结果弹窗保持一致。
 type Summary struct {
-	Items      []Item         `json:"items"`
-	Counts     map[string]int `json:"counts"`
-	AvgScore   float64        `json:"avgScore"`
-	HasScore   bool           `json:"hasScore"`
-	Priority   []Item         `json:"priority"`
-	IssueCount int            `json:"issueCount"`
-	Common     []Common       `json:"common"`
-	Skipped    int            `json:"skipped"`
-	ElapsedMS  int64          `json:"elapsedMs"`
+	Items              []Item         `json:"items"`
+	Counts             map[string]int `json:"counts"`
+	AvgScore           float64        `json:"avgScore"`
+	HasScore           bool           `json:"hasScore"`
+	Priority           []Item         `json:"priority"`
+	IssueCount         int            `json:"issueCount"`
+	Common             []Common       `json:"common"`
+	Skipped            int            `json:"skipped"`
+	MaintenanceSkipped int            `json:"maintenanceSkipped"`
+	ElapsedMS          int64          `json:"elapsedMs"`
 }
 
 // Build 根据巡检记录和失败项生成批量摘要。

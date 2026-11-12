@@ -103,6 +103,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/servers/{id}", s.authed(s.handleServerUpdate))
 	s.mux.HandleFunc("DELETE /api/servers/{id}", s.authed(s.handleServerDelete))
 	s.mux.HandleFunc("POST /api/servers/{id}/inspect", s.authed(s.handleServerInspect))
+	s.mux.HandleFunc("POST /api/servers/{id}/maintenance", s.authed(s.handleServerMaintenance))
 	s.mux.HandleFunc("POST /api/servers/{id}/trust", s.authed(s.handleServerTrust))
 
 	s.mux.HandleFunc("GET /api/inspections", s.authed(s.handleInspectionsList))

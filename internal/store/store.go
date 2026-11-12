@@ -46,6 +46,9 @@ var schema = []string{
 		node_role   TEXT    NOT NULL DEFAULT '',
 		tags        TEXT    NOT NULL DEFAULT '',
 		note        TEXT    NOT NULL DEFAULT '',
+		maintenance       INTEGER NOT NULL DEFAULT 0,
+		maintenance_until TEXT    NOT NULL DEFAULT '',
+		maintenance_note  TEXT    NOT NULL DEFAULT '',
 		created_at  TEXT    NOT NULL,
 		updated_at  TEXT    NOT NULL
 	)`,
@@ -169,6 +172,20 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("迁移 servers.node_role 失败: %w", err)
 		}
 	}
+	for _, col := range []struct {
+		name string
+		ddl  string
+	}{
+		{"maintenance", `ALTER TABLE servers ADD COLUMN maintenance INTEGER NOT NULL DEFAULT 0`},
+		{"maintenance_until", `ALTER TABLE servers ADD COLUMN maintenance_until TEXT NOT NULL DEFAULT ''`},
+		{"maintenance_note", `ALTER TABLE servers ADD COLUMN maintenance_note TEXT NOT NULL DEFAULT ''`},
+	} {
+		if !columns[col.name] {
+			if _, err := s.db.Exec(col.ddl); err != nil {
+				return fmt.Errorf("迁移 servers.%s 失败: %w", col.name, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -210,20 +227,30 @@ func parseTime(v string) time.Time {
 
 // ---------- 服务器 ----------
 
-const serverColumns = `id, name, host, port, username, password, host_key, group_name, node_role, tags, note, created_at, updated_at`
+const serverColumns = `id, name, host, port, username, password, host_key, group_name, node_role, tags, note,
+	maintenance, maintenance_until, maintenance_note, created_at, updated_at`
 
 func scanServer(scanner interface{ Scan(...any) error }) (*Server, error) {
 	var (
 		sv               Server
+		maintenance      int
+		maintenanceUntil string
 		created, updated string
 	)
 	err := scanner.Scan(&sv.ID, &sv.Name, &sv.Host, &sv.Port, &sv.Username, &sv.PasswordEnc,
-		&sv.HostKey, &sv.Group, &sv.NodeRole, &sv.Tags, &sv.Note, &created, &updated)
+		&sv.HostKey, &sv.Group, &sv.NodeRole, &sv.Tags, &sv.Note,
+		&maintenance, &maintenanceUntil, &sv.MaintenanceNote, &created, &updated)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	sv.Maintenance = maintenance == 1
+	if maintenanceUntil != "" {
+		if t := parseTime(maintenanceUntil); !t.IsZero() {
+			sv.MaintenanceUntil = &t
+		}
 	}
 	sv.CreatedAt = parseTime(created)
 	sv.UpdatedAt = parseTime(updated)
@@ -367,6 +394,7 @@ func (s *Store) SetHostKey(id int64, fingerprint string) error {
 func (s *Store) ListServerViews() ([]ServerView, error) {
 	const q = `
 		SELECT s.id, s.name, s.host, s.port, s.username, s.host_key, s.group_name, s.node_role, s.tags, s.note,
+		       s.maintenance, s.maintenance_until, s.maintenance_note,
 		       s.created_at, s.updated_at,
 		       CASE WHEN s.username <> '' AND s.password <> '' THEN 1 ELSE 0 END,
 		       i.id, i.status, i.score, i.started_at
@@ -384,15 +412,25 @@ func (s *Store) ListServerViews() ([]ServerView, error) {
 	out := make([]ServerView, 0, 16)
 	for rows.Next() {
 		var (
-			v                  ServerView
-			created, updated   string
-			configured         int
-			lastID, lastScore  sql.NullInt64
-			lastStatus, lastAt sql.NullString
+			v                           ServerView
+			maintenance                 int
+			maintenanceUntil, maintNote string
+			created, updated            string
+			configured                  int
+			lastID, lastScore           sql.NullInt64
+			lastStatus, lastAt          sql.NullString
 		)
 		if err := rows.Scan(&v.ID, &v.Name, &v.Host, &v.Port, &v.Username, &v.HostKey, &v.Group, &v.NodeRole, &v.Tags, &v.Note,
+			&maintenance, &maintenanceUntil, &maintNote,
 			&created, &updated, &configured, &lastID, &lastStatus, &lastScore, &lastAt); err != nil {
 			return nil, err
+		}
+		v.Maintenance = maintenance == 1
+		v.MaintenanceNote = maintNote
+		if maintenanceUntil != "" {
+			if t := parseTime(maintenanceUntil); !t.IsZero() {
+				v.MaintenanceUntil = &t
+			}
 		}
 		v.Configured = configured == 1
 		v.CreatedAt = parseTime(created)
