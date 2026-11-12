@@ -2370,10 +2370,13 @@ async function loadComparison(inspectionId) {
     const delta = Number(c.scoreDelta) || 0;
     const deltaClass = delta > 0 ? 'good' : (delta < 0 ? 'bad' : '');
     const metricRow = (label, current, previous, suffix = '%') => {
-      const d = (Number(current) || 0) - (Number(previous) || 0);
+      const fmtPct = (v) => Math.round(Number(v) || 0);
+      const cur = fmtPct(current);
+      const prev = fmtPct(previous);
+      const d = cur - prev;
       const cls = d > 0 ? 'bad' : (d < 0 ? 'good' : '');
-      const text = `${Number(previous) || 0}${suffix} → ${Number(current) || 0}${suffix}`;
-      return `<div class="compare-metric"><span>${label}</span><strong>${text}</strong><em class="${cls}">${d > 0 ? '+' : ''}${d.toFixed(1)}${suffix}</em></div>`;
+      const text = `${prev}${suffix} → ${cur}${suffix}`;
+      return `<div class="compare-metric"><span>${label}</span><strong>${text}</strong><em class="${cls}">${d > 0 ? '+' : ''}${d}${suffix}</em></div>`;
     };
     const issueList = (title, items, cls) => items && items.length
       ? `<div class="compare-list"><h4 class="${cls}">${title}（${items.length}）</h4><ul>${items.slice(0, 8).map((it) => `<li>${esc(it.section)} · ${esc(it.label)}：${esc(it.value)}</li>`).join('')}</ul>${items.length > 8 ? `<div class="batch-note">仅展示前 8 项</div>` : ''}</div>`
