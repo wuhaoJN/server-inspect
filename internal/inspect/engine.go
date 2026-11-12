@@ -46,7 +46,7 @@ var commandList = []commandDef{
 	{"selinux", `getenforce 2>/dev/null || cat /sys/fs/selinux/enforce 2>/dev/null`},
 	{"reboot", `if [ -f /var/run/reboot-required ]; then echo yes; else echo no; fi`},
 	{"updates", `if command -v apt-get >/dev/null 2>&1; then apt list --upgradable 2>/dev/null | grep -c upgradable; elif command -v dnf >/dev/null 2>&1; then dnf -C -q list --upgrades 2>/dev/null | grep -c '^[a-zA-Z]'; elif command -v yum >/dev/null 2>&1; then yum -C -q list updates 2>/dev/null | grep -c '^[a-zA-Z]'; fi`},
-	{"dmesg", `dmesg 2>/dev/null | grep -Ei 'error|fail|oom' | tail -n 5`},
+	{"dmesg", `dmesg 2>/dev/null | grep -Ei 'error|fail|oom|panic|segfault' | tail -n 20`},
 }
 
 type cmdResult struct {
@@ -744,11 +744,24 @@ func buildLogSection(col *collector, rep *Report) Section {
 		}
 		sec.Items = append(sec.Items, Item{Label: "内核错误日志", Value: "未发现或无法读取", Detail: detail, Status: StatusSkipped})
 	} else {
-		lines := parseDMesg(raw)
+		virtualized := parseLscpu(col.get("lscpu")).Virtualization != ""
+		lines, ignored := parseDMesg(raw, virtualized)
+		if len(lines) == 0 {
+			detail := ""
+			if ignored > 0 {
+				detail = fmt.Sprintf("已忽略 %d 条虚拟化环境常见日志（ACPI MMCONFIG、RAS Correctable Errors），不视为故障", ignored)
+			}
+			sec.Items = append(sec.Items, Item{Label: "内核错误日志", Value: "未发现", Detail: detail, Status: StatusInfo})
+			return sec
+		}
+		detail := strings.Join(lines, "\n")
+		if ignored > 0 {
+			detail += fmt.Sprintf("\n另有 %d 条虚拟化环境常见日志已忽略", ignored)
+		}
 		sec.Items = append(sec.Items, Item{
 			Label:  "内核错误日志",
 			Value:  fmt.Sprintf("%d 条", len(lines)),
-			Detail: strings.Join(lines, "\n"),
+			Detail: detail,
 			Status: StatusWarning,
 		})
 	}

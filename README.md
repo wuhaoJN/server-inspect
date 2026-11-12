@@ -330,7 +330,7 @@ sudo systemctl start server-inspect
 | 网络 | IPv4 地址、TCP/UDP 监听端口、已建立 TCP 连接数 | — |
 | 服务 | systemd 失败单元、SSH/cron/rsyslog/docker/nginx/数据库等关键服务状态 | 失败单元/服务失败告警 |
 | 安全合规 | `sshd_config` 关键项、防火墙状态、SELinux、登录失败次数、最近登录、待重启标记、可更新软件包数 | root 登录/空密码/防火墙关闭等告警 |
-| 日志与其他 | `dmesg` 中 error/fail/oom 关键字 | 存在异常记录时告警 |
+| 日志与其他 | `dmesg` 中 error/fail/oom/panic/segfault 关键字 | 存在异常记录时告警；虚拟化环境自动忽略 MMCONFIG、RAS Correctable Errors 等常见无害日志 |
 
 **健康评分公式**：`100 - 25 × 严重项 - 6 × 警告项`（警告扣分最多 40 分，最低 0 分）。
 

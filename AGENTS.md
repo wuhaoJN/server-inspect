@@ -1,7 +1,7 @@
 # AGENTS.md — AI 编码代理工作规范
 
 > **本文件是所有 AI 编码代理（OpenCode / Codex / Claude Code / Gemini CLI / Cursor / Copilot 等）的唯一入口规范。**
-> 最后更新：2026-11-12 · 当前版本：以 `main.go` 中 `version` 为准（本文档编写时为 1.0.13）
+> 最后更新：2026-11-12 · 当前版本：以 `main.go` 中 `version` 为准（本文档编写时为 1.0.14）
 > 详细规范：[DEVELOPMENT.md](DEVELOPMENT.md) · 部署使用：[README.md](README.md) · 后续计划：[ROADMAP.md](ROADMAP.md)
 
 ---
@@ -76,7 +76,7 @@ go run . -addr 127.0.0.1:8080 -data ./data
 
 # Linux 发布包（输出 dist/）
 ./release.sh
-VERSION=1.0.13 ./release.sh
+VERSION=1.0.14 ./release.sh
 
 # 安装脚本语法检查
 bash -n deploy/install.sh
@@ -219,8 +219,8 @@ bash -n deploy/install.sh   # 改安装脚本时
 
 ## 9. 当前状态与下一步
 
-- 当前功能：服务器 CRUD、节点职责、列表「更多」菜单、批量巡检结果分析、单台/批量巡检、网络扫描、IP 排序、待配置登录、报告历史、密码可见切换、管理员改密、Linux systemd 部署；定时任务（间隔/每天/每周）、批量记录持久化、服务器详情页、7/30/90 天趋势、报告对比、服务器维护状态（批量/定时自动跳过）、僵尸进程明细。
-- 当前线上版本：1.0.13（以 `main.go`/`dist` 二进制 `-version` 为准）。
+- 当前功能：服务器 CRUD、节点职责、列表「更多」菜单、批量巡检结果分析、单台/批量巡检、网络扫描、IP 排序、待配置登录、报告历史、密码可见切换、管理员改密、Linux systemd 部署；定时任务（间隔/每天/每周）、批量记录持久化、服务器详情页、7/30/90 天趋势、报告对比、服务器维护状态（批量/定时自动跳过）、僵尸进程明细、虚拟化内核日志降噪。
+- 当前线上版本：1.0.14（以 `main.go`/`dist` 二进制 `-version` 为准）。
 - 待办优先级见 `ROADMAP.md`：
   - P0：会话安全（改密失效旧会话/登录限流）、告警通知、批量配置登录、数据保留备份。
   - P1：RBAC/审计、SSH 私钥/跳板机、服务端批量任务、扫描增强、可观测性、Docker/HTTPS。

@@ -367,3 +367,61 @@ func TestBuildProcessSectionZombieDetails(t *testing.T) {
 		t.Fatalf("zombie #2 = %#v", z2)
 	}
 }
+
+func TestParseDMesgBenignFilter(t *testing.T) {
+	raw := "[    0.695693] acpi PNP0A03:00: fail to add MMCONFIG information, can't access extended PCI configuration space under this bridge.\n" +
+		"[    2.247662] RAS: Correctable Errors collector initialized.\n" +
+		"[   12.000000] EXT4-fs error (device sda1): unable to read superblock\n" +
+		"[   13.000000] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null)\n"
+
+	lines, ignored := parseDMesg(raw, true)
+	if len(lines) != 2 || ignored != 2 {
+		t.Fatalf("virtualized lines=%#v ignored=%d", lines, ignored)
+	}
+	if !strings.Contains(lines[0], "EXT4-fs error") || !strings.Contains(lines[1], "oom-kill") {
+		t.Fatalf("unexpected lines = %#v", lines)
+	}
+
+	lines, ignored = parseDMesg(raw, false)
+	if len(lines) != 4 || ignored != 0 {
+		t.Fatalf("bare metal lines=%#v ignored=%d", lines, ignored)
+	}
+}
+
+func TestBuildLogSectionIgnoresBenignDMesgOnlyInVM(t *testing.T) {
+	benign := "[    0.695693] acpi PNP0A03:00: fail to add MMCONFIG information, can't access extended PCI configuration space under this bridge.\n" +
+		"[    2.247662] RAS: Correctable Errors collector initialized.\n"
+
+	vm := &collector{results: map[string]cmdResult{
+		"lscpu": {stdout: "Model name: Test CPU\nHypervisor vendor: VMware\n"},
+		"dmesg": {stdout: benign},
+	}}
+	sec := buildLogSection(vm, &Report{})
+	if len(sec.Items) != 1 || sec.Items[0].Status != StatusInfo || sec.Items[0].Value != "未发现" {
+		t.Fatalf("vm benign item = %#v", sec.Items)
+	}
+	if !strings.Contains(sec.Items[0].Detail, "已忽略 2 条") {
+		t.Fatalf("vm benign detail = %q", sec.Items[0].Detail)
+	}
+
+	bare := &collector{results: map[string]cmdResult{
+		"lscpu": {stdout: "Model name: Test CPU\n"},
+		"dmesg": {stdout: benign},
+	}}
+	sec = buildLogSection(bare, &Report{})
+	if len(sec.Items) != 1 || sec.Items[0].Status != StatusWarning || sec.Items[0].Value != "2 条" {
+		t.Fatalf("bare metal benign item = %#v", sec.Items)
+	}
+
+	mixed := &collector{results: map[string]cmdResult{
+		"lscpu": {stdout: "Model name: Test CPU\nVirtualization type: full\n"},
+		"dmesg": {stdout: benign + "[   20.000000] kernel panic - not syncing: fatal exception\n"},
+	}}
+	sec = buildLogSection(mixed, &Report{})
+	if len(sec.Items) != 1 || sec.Items[0].Status != StatusWarning || sec.Items[0].Value != "1 条" {
+		t.Fatalf("mixed item = %#v", sec.Items)
+	}
+	if !strings.Contains(sec.Items[0].Detail, "kernel panic") || !strings.Contains(sec.Items[0].Detail, "另有 2 条") {
+		t.Fatalf("mixed detail = %q", sec.Items[0].Detail)
+	}
+}

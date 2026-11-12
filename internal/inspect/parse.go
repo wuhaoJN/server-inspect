@@ -529,20 +529,42 @@ func parseLastLogins(raw string) []string {
 
 var errPattern = regexp.MustCompile(`(?i)error|fail|oom|panic|segfault`)
 
-func parseDMesg(raw string) []string {
+// benignDMesgPatterns 是虚拟化环境中的常见无害日志，避免误报为内核故障。
+var benignDMesgPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)acpi PNP0A03:00: fail to add MMCONFIG information`),
+	regexp.MustCompile(`(?i)RAS: Correctable Errors collector initialized`),
+}
+
+func isBenignDMesg(line string) bool {
+	for _, re := range benignDMesgPatterns {
+		if re.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseDMesg 过滤内核日志；ignoreBenign 为 true 时跳过虚拟化环境常见噪声，
+// 并返回被忽略的条数供报告展示。
+func parseDMesg(raw string, ignoreBenign bool) ([]string, int) {
 	var out []string
+	ignored := 0
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || !errPattern.MatchString(line) {
+			continue
+		}
+		if ignoreBenign && isBenignDMesg(line) {
+			ignored++
+			continue
+		}
+		if len(out) >= 5 {
 			continue
 		}
 		if len(line) > 160 {
 			line = line[:160]
 		}
 		out = append(out, line)
-		if len(out) >= 5 {
-			break
-		}
 	}
-	return out
+	return out, ignored
 }
