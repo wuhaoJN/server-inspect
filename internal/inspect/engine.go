@@ -32,6 +32,7 @@ var commandList = []commandDef{
 	{"topmem", `LC_ALL=C ps -eo pid,user,pcpu,pmem,rss,comm --sort=-pmem 2>/dev/null | head -n 11`},
 	{"proccount", `ps -e --no-headers 2>/dev/null | wc -l`},
 	{"zombie", `ps -eo stat --no-headers 2>/dev/null | grep -c '^Z'`},
+	{"zombiedetail", `LC_ALL=C ps -eo pid,ppid,stat,comm --no-headers 2>/dev/null | awk '$3 ~ /^Z/' | head -n 50`},
 	{"listen", `if command -v ss >/dev/null 2>&1; then ss -tuln 2>/dev/null; else netstat -tuln 2>/dev/null; fi`},
 	{"estab", `if command -v ss >/dev/null 2>&1; then ss -tn state established 2>/dev/null | tail -n +2 | wc -l; else netstat -tn 2>/dev/null | grep -c ESTAB; fi`},
 	{"interfaces", `ip -o -4 addr show 2>/dev/null || ifconfig -a 2>/dev/null`},
@@ -404,13 +405,47 @@ func buildProcessSection(col *collector, rep *Report) Section {
 		rep.Metrics.ProcessCount = count
 		sec.Items = append(sec.Items, Item{Label: "进程总数", Value: fmt.Sprintf("%d 个", count), Status: StatusInfo})
 	}
-	if zombies := atoi(firstLine(col.get("zombie"))); zombies > 0 {
+	zombies := atoi(firstLine(col.get("zombie")))
+	zombieDetails := parseZombieProcesses(col.get("zombiedetail"))
+	if zombies == 0 && len(zombieDetails) > 0 {
+		zombies = len(zombieDetails)
+	}
+	if zombies > 0 {
+		detailText := "建议排查父进程回收逻辑"
+		if len(zombieDetails) > 0 {
+			detailText = fmt.Sprintf("已采集 %d 个明细，建议排查父进程回收逻辑", len(zombieDetails))
+		}
 		sec.Items = append(sec.Items, Item{
 			Label:  "僵尸进程",
 			Value:  fmt.Sprintf("%d 个", zombies),
-			Detail: "建议排查父进程回收逻辑",
+			Detail: detailText,
 			Status: StatusWarning,
 		})
+		shown := len(zombieDetails)
+		if shown > 8 {
+			shown = 8
+		}
+		for i := 0; i < shown; i++ {
+			z := zombieDetails[i]
+			sec.Items = append(sec.Items, Item{
+				Label:  fmt.Sprintf("僵尸进程 #%d", i+1),
+				Value:  fmt.Sprintf("PID %d", z.PID),
+				Detail: fmt.Sprintf("父进程 %d · 命令 %s · 状态 %s · 需父进程调用 wait 回收", z.PPID, z.Command, z.State),
+				Status: StatusInfo,
+			})
+		}
+		if remaining := zombies - shown; remaining > 0 {
+			note := "建议登录主机进一步排查"
+			if len(zombieDetails) > shown {
+				note = fmt.Sprintf("仅展示前 %d 个，共采集 %d 个，建议登录主机进一步排查", shown, len(zombieDetails))
+			}
+			sec.Items = append(sec.Items, Item{
+				Label:  "其余僵尸进程",
+				Value:  fmt.Sprintf("%d 个", remaining),
+				Detail: note,
+				Status: StatusInfo,
+			})
+		}
 	}
 
 	topCPU := parseProcesses(col.get("topcpu"))

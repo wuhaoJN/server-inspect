@@ -306,13 +306,13 @@ go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ### 11.1 版本
 
 - 版本号在 `main.version`，构建时通过 `-X main.version=` 注入。
-- 功能修复/新增后递增版本（示例：1.0.10 → 1.0.11）。
+- 功能修复/新增后递增版本（示例：1.0.11 → 1.0.12）。
 
 ### 11.2 构建
 
 ```bash
 ./release.sh                 # Linux amd64 + arm64 → dist/
-VERSION=1.0.11 ./release.sh   # 指定版本
+VERSION=1.0.12 ./release.sh   # 指定版本
 ```
 
 发布包包含：

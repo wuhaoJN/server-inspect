@@ -289,6 +289,42 @@ func parseProcesses(raw string) []procInfo {
 	return out
 }
 
+type zombieInfo struct {
+	PID     int
+	PPID    int
+	State   string
+	Command string
+}
+
+// parseZombieProcesses 解析 ps -eo pid,ppid,stat,comm 输出的僵尸进程行。
+// 命令名可能包含空格，因此第 4 个字段之后的内容整体作为命令名。
+func parseZombieProcesses(raw string) []zombieInfo {
+	var out []zombieInfo
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		if !strings.HasPrefix(fields[2], "Z") {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		command := strings.Join(fields[3:], " ")
+		if command == "" {
+			command = "未知"
+		}
+		out = append(out, zombieInfo{PID: pid, PPID: ppid, State: fields[2], Command: command})
+	}
+	return out
+}
+
 type listenerInfo struct {
 	Proto string
 	Addr  string

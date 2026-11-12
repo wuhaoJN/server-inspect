@@ -328,3 +328,42 @@ func TestThresholdStatus(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestParseZombieProcesses(t *testing.T) {
+	raw := " 1234  1200 Z    defunct\n 5678  1200 Z+   worker process\n 999   1    Ss   bash\nbad line\n"
+	got := parseZombieProcesses(raw)
+	if len(got) != 2 {
+		t.Fatalf("zombies = %#v", got)
+	}
+	if got[0].PID != 1234 || got[0].PPID != 1200 || got[0].State != "Z" || got[0].Command != "defunct" {
+		t.Fatalf("first = %#v", got[0])
+	}
+	if got[1].Command != "worker process" || got[1].PID != 5678 {
+		t.Fatalf("second = %#v", got[1])
+	}
+}
+
+func TestBuildProcessSectionZombieDetails(t *testing.T) {
+	c := &collector{results: map[string]cmdResult{
+		"proccount":    {stdout: "120\n"},
+		"zombie":       {stdout: "2\n"},
+		"zombiedetail": {stdout: " 1234  1200 Z    defunct\n 5678  1200 Z+   worker process\n"},
+	}}
+	sec := buildProcessSection(c, &Report{})
+	items := map[string]Item{}
+	for _, it := range sec.Items {
+		items[it.Label] = it
+	}
+	main, ok := items["僵尸进程"]
+	if !ok || main.Value != "2 个" || main.Status != StatusWarning {
+		t.Fatalf("main zombie item = %#v", main)
+	}
+	z1, ok := items["僵尸进程 #1"]
+	if !ok || z1.Value != "PID 1234" || !strings.Contains(z1.Detail, "父进程 1200") || !strings.Contains(z1.Detail, "defunct") {
+		t.Fatalf("zombie #1 = %#v", z1)
+	}
+	z2, ok := items["僵尸进程 #2"]
+	if !ok || z2.Value != "PID 5678" || !strings.Contains(z2.Detail, "worker process") {
+		t.Fatalf("zombie #2 = %#v", z2)
+	}
+}
