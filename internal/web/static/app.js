@@ -310,6 +310,8 @@ function confirmAction({ title, message, confirmText = '确认删除', onConfirm
 
 function renderLogin(message) {
   document.title = '登录 · 服务器巡检系统';
+  const backToTop = document.getElementById('backToTop');
+  if (backToTop) backToTop.classList.remove('show');
   appEl.className = 'app';
   appEl.innerHTML = `
   <div class="login-page">
@@ -466,6 +468,8 @@ function onRoute() {
   else if (page === 'batches') viewBatches();
   else if (page === 'schedules') viewSchedules();
   else viewDashboard();
+
+  updateBackToTop();
 }
 
 /* ---------------- 仪表盘 ---------------- */
@@ -2401,6 +2405,28 @@ async function loadComparison(inspectionId) {
     box.innerHTML = '';
   }
 }
+
+/* ---------------- 回到顶部 ---------------- */
+
+const BACK_TO_TOP_OFFSET = 240;
+
+function updateBackToTop() {
+  const btn = document.getElementById('backToTop');
+  if (!btn) return;
+  const onInspections = !!state.user && state.route && state.route.name === 'inspections';
+  const shouldShow = onInspections && window.scrollY > BACK_TO_TOP_OFFSET;
+  btn.classList.toggle('show', shouldShow);
+}
+
+window.addEventListener('scroll', updateBackToTop, { passive: true });
+
+document.addEventListener('click', (event) => {
+  const btn = event.target.closest && event.target.closest('#backToTop');
+  if (!btn) return;
+  event.preventDefault();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  btn.blur();
+});
 
 /* ---------------- 全局交互 ---------------- */
 
