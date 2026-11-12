@@ -25,7 +25,7 @@ import (
 )
 
 // version 可在构建时通过 -ldflags "-X main.version=x.y.z" 注入。
-var version = "1.0.9"
+var version = "1.0.10"
 
 func main() {
 	console.EnableUTF8()

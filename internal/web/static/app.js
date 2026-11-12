@@ -821,7 +821,7 @@ function openScanModal() {
     resultsBox.innerHTML = `
       <div class="scan-result-head">
         <label class="scan-select-all"><input type="checkbox" id="scanSelectAll" ${allChecked ? 'checked' : ''} ${selectable.length ? '' : 'disabled'}> 全选可添加主机（${selectable.length}）</label>
-        <span class="muted">已选 ${scanState.selected.size} 台</span>
+        <span class="muted" id="scanSelectedCount">已选 ${scanState.selected.size} 台</span>
       </div>
       <div class="table-wrap scan-table-wrap">
         <table class="data-table scan-table">
@@ -835,12 +835,27 @@ function openScanModal() {
         <button type="button" class="btn btn-primary" id="addScannedBtn" ${scanState.selected.size ? '' : 'disabled'}>加入服务器列表 (${scanState.selected.size})</button>
       </div>`;
 
+    // 勾选变化只更新计数与按钮，避免重建列表导致滚动位置回到顶部。
+    const updateScanSummary = () => {
+      const countEl = document.getElementById('scanSelectedCount');
+      if (countEl) countEl.textContent = `已选 ${scanState.selected.size} 台`;
+      const addBtn = document.getElementById('addScannedBtn');
+      if (addBtn) {
+        addBtn.textContent = `加入服务器列表 (${scanState.selected.size})`;
+        addBtn.disabled = scanState.selected.size === 0;
+      }
+      const selectAllEl = document.getElementById('scanSelectAll');
+      if (selectAllEl) {
+        selectAllEl.checked = selectable.length > 0 && selectable.every((h) => scanState.selected.has(keyForHost(h)));
+      }
+    };
+
     resultsBox.querySelectorAll('.scan-check').forEach((cb) => {
       cb.addEventListener('change', () => {
         const key = cb.dataset.key;
         if (cb.checked) scanState.selected.add(key);
         else scanState.selected.delete(key);
-        renderResults();
+        updateScanSummary();
       });
     });
 
@@ -849,7 +864,11 @@ function openScanModal() {
       selectAll.addEventListener('change', () => {
         if (selectAll.checked) selectable.forEach((h) => scanState.selected.add(keyForHost(h)));
         else scanState.selected.clear();
-        renderResults();
+        resultsBox.querySelectorAll('.scan-check').forEach((cb) => {
+          const key = cb.dataset.key;
+          if (key) cb.checked = scanState.selected.has(key);
+        });
+        updateScanSummary();
       });
     }
 
