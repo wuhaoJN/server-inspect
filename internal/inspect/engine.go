@@ -42,7 +42,38 @@ var commandList = []commandDef{
 	{"last", `LC_ALL=C last -n 8 -w 2>/dev/null | head -n 8`},
 	{"failedlogin", `for f in /var/log/auth.log /var/log/secure; do if [ -r "$f" ]; then printf '%s %s\n' "$f" "$(grep -c 'Failed password' "$f" 2>/dev/null)"; fi; done`},
 	{"sshdconfig", `grep -Ei '^[[:space:]]*(Port|PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|PermitEmptyPasswords)[[:space:]]' /etc/ssh/sshd_config 2>/dev/null | head -n 12`},
-	{"firewall", `if command -v ufw >/dev/null 2>&1; then ufw status 2>&1 | head -n 5; elif command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --state 2>&1 | head -n 2; elif command -v iptables >/dev/null 2>&1; then iptables -S 2>&1 | head -n 3; else echo 'no-firewall-tool'; fi`},
+	{"firewall", `if command -v ufw >/dev/null 2>&1; then
+  out=$(ufw status 2>&1 | head -n 5)
+  case "$out" in
+    *"Status:"*) printf '%s\n' "$out" ;;
+    *)
+      if [ -r /etc/ufw/ufw.conf ]; then
+        cfg=$(grep -E '^[[:space:]]*ENABLED=' /etc/ufw/ufw.conf 2>/dev/null | tail -n 1)
+        [ -n "$cfg" ] && printf 'ufw-config=%s\n' "$cfg"
+      fi
+      state=$(systemctl is-active ufw 2>/dev/null || true)
+      [ -n "$state" ] && printf 'ufw-service=%s\n' "$state"
+      ;;
+  esac
+elif command -v firewall-cmd >/dev/null 2>&1; then
+  out=$(firewall-cmd --state 2>&1 | head -n 2)
+  case "$out" in
+    running|"not running") printf '%s\n' "$out" ;;
+    *)
+      state=$(systemctl is-active firewalld 2>/dev/null || true)
+      [ -n "$state" ] && printf 'firewalld-service=%s\n' "$state"
+      ;;
+  esac
+elif command -v iptables >/dev/null 2>&1; then
+  out=$(iptables -S 2>/dev/null | head -n 3)
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+  else
+    printf 'iptables-no-permission\n'
+  fi
+else
+  echo 'no-firewall-tool'
+fi`},
 	{"selinux", `getenforce 2>/dev/null || cat /sys/fs/selinux/enforce 2>/dev/null`},
 	{"reboot", `if [ -f /var/run/reboot-required ]; then echo yes; else echo no; fi`},
 	{"updates", `if command -v apt-get >/dev/null 2>&1; then apt list --upgradable 2>/dev/null | grep -c upgradable; elif command -v dnf >/dev/null 2>&1; then dnf -C -q list --upgrades 2>/dev/null | grep -c '^[a-zA-Z]'; elif command -v yum >/dev/null 2>&1; then yum -C -q list updates 2>/dev/null | grep -c '^[a-zA-Z]'; fi`},
@@ -691,14 +722,56 @@ func buildFirewallItem(col *collector) Item {
 		return Item{Label: "防火墙", Value: "已启用 (ufw)", Status: StatusOK}
 	case strings.Contains(lower, "status: inactive"):
 		return Item{Label: "防火墙", Value: "未启用 (ufw)", Status: StatusWarning}
+	case strings.Contains(lower, "ufw-config=enabled=no"), strings.Contains(lower, "ufw-config=no"):
+		return Item{
+			Label:  "防火墙",
+			Value:  "未启用 (ufw)",
+			Detail: "根据 /etc/ufw/ufw.conf 判断（当前账号无权限读取 ufw status）",
+			Status: StatusWarning,
+		}
+	case strings.Contains(lower, "ufw-config=enabled=yes"), strings.Contains(lower, "ufw-config=yes"):
+		if strings.Contains(lower, "ufw-service=active") {
+			return Item{Label: "防火墙", Value: "已启用 (ufw)", Status: StatusOK}
+		}
+		return Item{
+			Label:  "防火墙",
+			Value:  "配置已启用但服务未运行 (ufw)",
+			Detail: "请检查 systemctl status ufw",
+			Status: StatusWarning,
+		}
+	case strings.Contains(lower, "ufw-service=inactive"), strings.Contains(lower, "ufw-service=failed"):
+		return Item{
+			Label:  "防火墙",
+			Value:  "未启用 (ufw)",
+			Detail: "通过 systemd 服务状态判断（当前账号无权限读取 ufw status）",
+			Status: StatusWarning,
+		}
+	case strings.Contains(lower, "ufw-service=active"):
+		return Item{
+			Label:  "防火墙",
+			Value:  "无法确认 (ufw)",
+			Detail: "服务运行中，但当前账号无权限读取规则；请用 root 或检查 /etc/ufw/ufw.conf",
+			Status: StatusSkipped,
+		}
+	case strings.Contains(lower, "firewalld-service=active"):
+		return Item{Label: "防火墙", Value: "已启用 (firewalld)", Status: StatusOK}
+	case strings.Contains(lower, "firewalld-service=inactive"), strings.Contains(lower, "firewalld-service=failed"):
+		return Item{Label: "防火墙", Value: "未启用 (firewalld)", Status: StatusWarning}
 	case strings.Contains(lower, "not running"):
 		return Item{Label: "防火墙", Value: "未启用 (firewalld)", Status: StatusWarning}
 	case strings.TrimSpace(lower) == "running":
 		return Item{Label: "防火墙", Value: "已启用 (firewalld)", Status: StatusOK}
 	case strings.Contains(lower, "no-firewall-tool"):
 		return Item{Label: "防火墙", Value: "未检测到防火墙工具", Status: StatusWarning}
-	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "must be root"),
-		strings.Contains(lower, "operation not permitted"), strings.Contains(lower, "you must be root"):
+	case strings.Contains(lower, "iptables-no-permission"):
+		return Item{
+			Label:  "防火墙",
+			Value:  "无法确认 (iptables)",
+			Detail: "当前账号无权限读取 iptables 规则",
+			Status: StatusSkipped,
+		}
+	case strings.Contains(lower, "you need to be root"), strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "must be root"), strings.Contains(lower, "operation not permitted"):
 		return Item{Label: "防火墙", Value: "无权限读取", Detail: "需要使用具有 root 权限的账号", Status: StatusSkipped}
 	case strings.Contains(lower, "-a "):
 		lines := 0

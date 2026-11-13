@@ -425,3 +425,34 @@ func TestBuildLogSectionIgnoresBenignDMesgOnlyInVM(t *testing.T) {
 		t.Fatalf("mixed detail = %q", sec.Items[0].Detail)
 	}
 }
+
+func TestBuildFirewallItem(t *testing.T) {
+	cases := []struct {
+		name   string
+		raw    string
+		status Status
+		value  string
+	}{
+		{"ufw active", "Status: active\n", StatusOK, "已启用 (ufw)"},
+		{"ufw inactive", "Status: inactive\n", StatusWarning, "未启用 (ufw)"},
+		{"ufw config no", "ufw-config=ENABLED=no\nufw-service=active\n", StatusWarning, "未启用 (ufw)"},
+		{"ufw config yes active", "ufw-config=ENABLED=yes\nufw-service=active\n", StatusOK, "已启用 (ufw)"},
+		{"ufw config yes inactive", "ufw-config=ENABLED=yes\nufw-service=inactive\n", StatusWarning, "配置已启用但服务未运行 (ufw)"},
+		{"ufw service active only", "ufw-service=active\n", StatusSkipped, "无法确认 (ufw)"},
+		{"root permission error", "ERROR: You need to be root to run this script\n", StatusSkipped, "无权限读取"},
+		{"firewalld active", "firewalld-service=active\n", StatusOK, "已启用 (firewalld)"},
+		{"firewalld inactive", "firewalld-service=inactive\n", StatusWarning, "未启用 (firewalld)"},
+		{"iptables no permission", "iptables-no-permission\n", StatusSkipped, "无法确认 (iptables)"},
+		{"no firewall tool", "no-firewall-tool\n", StatusWarning, "未检测到防火墙工具"},
+		{"iptables rules", "-P INPUT ACCEPT\n-A INPUT -p tcp --dport 22 -j ACCEPT\n", StatusOK, "iptables 规则 1 条"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &collector{results: map[string]cmdResult{"firewall": {stdout: tc.raw}}}
+			item := buildFirewallItem(c)
+			if item.Status != tc.status || item.Value != tc.value {
+				t.Fatalf("got status=%s value=%q, want status=%s value=%q", item.Status, item.Value, tc.status, tc.value)
+			}
+		})
+	}
+}
