@@ -1,7 +1,7 @@
 # AGENTS.md — AI 编码代理工作规范
 
 > **本文件是所有 AI 编码代理（OpenCode / Codex / Claude Code / Gemini CLI / Cursor / Copilot 等）的唯一入口规范。**
-> 最后更新：2026-11-13 · 当前版本：以 `main.go` 中 `version` 为准（本文档编写时为 1.0.15）
+> 最后更新：2026-11-13 · 当前版本：以 `main.go` 中 `version` 为准（本文档编写时为 1.0.16）
 > 详细规范：[DEVELOPMENT.md](DEVELOPMENT.md) · 部署使用：[README.md](README.md) · 后续计划：[ROADMAP.md](ROADMAP.md)
 
 ---
@@ -85,7 +85,7 @@ go run . -addr 127.0.0.1:8080 -data ./data
 
 # Linux 发布包（输出 dist/）
 ./release.sh
-VERSION=1.0.15 ./release.sh
+VERSION=1.0.16 ./release.sh
 
 # 安装脚本语法检查
 bash -n deploy/install.sh
@@ -179,7 +179,7 @@ Windows 开发机如果 `go` 不在 PATH，可临时使用现有工具链路径�
 - [ ] 是否把密码/凭据写进日志、错误、JSON、报告？
 - [ ] 是否把未转义数据插入前端 HTML？
 - [ ] 是否新增了无上限的 goroutine、连接、扫描范围或请求体？
-- [ ] 是否修改了主机/端口却沿用旧密码？（必须要求重新输入）
+- [ ] 是否修改了登录用户名/主机/端口却沿用旧密码？（必须要求重新输入）
 - [ ] 是否破坏 SSH 指纹校验或允许默认跳过？
 - [ ] 是否在目标上执行了非只读命令？
 - [ ] 是否在未授权情况下操作了生产服务器？
@@ -215,7 +215,7 @@ bash -n deploy/install.sh   # 改安装脚本时
 
 1. **`/proc/stat` 字段比预期多**：`read` 必须预留 `guest/guest_nice` 和额外吸收变量，否则 shell 算术报错，CPU 显示“无法采集”。
 2. **命令退出码非 0 不等于 SSH 断连**：`grep -c` 无匹配会返回 1，不能中止巡检；`isConnectionError` 已区分 `CommandError`。
-3. **修改主机/端口必须重新输入密码**：后端已强制，前端也做了提示，不要移除。
+3. **修改登录用户名/主机/端口必须重新输入密码**：后端已强制，前端也做了提示，不要移除。
 4. **IP 排序不能用字符串**：必须用 `netip.Addr.Compare`。
 5. **时间范围查询不能用会被省略小数的格式**：使用固定 9 位小数的 `queryTime()`。
 6. **scp/pscp 上传文件没有执行位**：安装脚本已处理；手工部署要 `chmod +x`。
@@ -223,13 +223,15 @@ bash -n deploy/install.sh   # 改安装脚本时
 8. **SQLite 不要放 NFS**；备份必须同时包含 `inspect.db` 与 `master.key`。
 9. **不要假设目标 shell 是 bash**：巡检命令使用 POSIX sh 语法；非 POSIX 账号会失败。
 10. **端口扫描/HTTP 请求必须有时限**；不要写无界循环。
+11. **定时任务按服务进程时区计算**：服务器系统时区为 UTC 时，需要给服务设置 `TZ=Asia/Shanghai`，否则“每天 08:00”会按 UTC 执行，页面显示为北京时间 16:00。
+12. **非 root 巡检账号读不到 `ufw status`、`dmesg`、`sshd_config` 等**：权限不足的项如实标记「跳过」，不要用 sudo/ACL 扩权；防火墙已通过 `/etc/ufw/ufw.conf` 和 systemd 服务状态兜底判断。
 
 ---
 
 ## 9. 当前状态与下一步
 
 - 当前功能：服务器 CRUD、节点职责、列表「更多」菜单、批量巡检结果分析、单台/批量巡检、网络扫描、IP 排序、待配置登录、报告历史、密码可见切换、管理员改密、Linux systemd 部署；定时任务（间隔/每天/每周）、批量记录持久化、服务器详情页、7/30/90 天趋势、报告对比、服务器维护状态（批量/定时自动跳过）、僵尸进程明细、虚拟化内核日志降噪、非 root 防火墙状态兜底检测。
-- 当前线上版本：1.0.15（以 `main.go`/`dist` 二进制 `-version` 为准）。
+- 当前线上版本：1.0.16（以 `main.go`/`dist` 二进制 `-version` 为准）。
 - 待办优先级见 `ROADMAP.md`：
   - P0：会话安全（改密失效旧会话/登录限流）、告警通知、批量配置登录、数据保留备份。
   - P1：RBAC/审计、SSH 私钥/跳板机、服务端批量任务、扫描增强、可观测性、Docker/HTTPS。

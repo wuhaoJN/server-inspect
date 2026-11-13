@@ -300,6 +300,7 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 
 	passwordEnc := existing.PasswordEnc
 	targetChanged := existing.Host != in.Host || existing.Port != in.Port
+	usernameChanged := existing.Username != in.Username
 	if in.Password != "" {
 		passwordEnc, err = s.cipher.Encrypt(in.Password)
 		if err != nil {
@@ -309,9 +310,9 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 	} else if existing.PasswordEnc == "" {
 		writeFail(w, http.StatusBadRequest, "请填写登录密码（当前仅支持用户名 + 密码认证）")
 		return
-	} else if targetChanged {
-		// 避免把已保存的旧凭据静默沿用到一个新的主机/端口。
-		writeFail(w, http.StatusBadRequest, "修改了主机地址或端口，请重新输入登录密码")
+	} else if targetChanged || usernameChanged {
+		// 避免把已保存的旧凭据静默沿用到一个新的主机/端口/用户名。
+		writeFail(w, http.StatusBadRequest, "修改了登录用户名、主机地址或端口，请重新输入登录密码")
 		return
 	}
 	hostKey := existing.HostKey
@@ -368,13 +369,14 @@ func (s *Server) handleServerTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sameTarget := existing != nil && existing.Host == in.Host && existing.Port == in.Port
+	sameUser := existing != nil && existing.Username == in.Username
 	if in.Password == "" {
 		if existing == nil {
 			writeFail(w, http.StatusBadRequest, "请输入登录密码")
 			return
 		}
-		if !sameTarget {
-			writeFail(w, http.StatusBadRequest, "修改了主机地址或端口，请重新输入登录密码")
+		if !sameTarget || !sameUser {
+			writeFail(w, http.StatusBadRequest, "修改了登录用户名、主机地址或端口，请重新输入登录密码")
 			return
 		}
 		password, err := s.cipher.Decrypt(existing.PasswordEnc)
@@ -948,7 +950,7 @@ func (s *Server) handleBatchCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	summary := batch.Build(records, serverMap, req.Failures, req.Skipped, req.ElapsedMS)
+	summary := batch.Build(records, serverMap, req.Failures, req.Skipped+req.MaintenanceSkipped, req.ElapsedMS)
 	summary.MaintenanceSkipped = req.MaintenanceSkipped
 	summaryJSON, err := json.Marshal(summary)
 	if err != nil {

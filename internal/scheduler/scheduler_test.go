@@ -91,3 +91,25 @@ func TestResolveTargetsSkipsMaintenanceAndUnconfigured(t *testing.T) {
 		t.Fatalf("custom stats = %#v", stats)
 	}
 }
+
+func TestNextRunForExecutionManualKeepsFuturePlan(t *testing.T) {
+	loc := time.FixedZone("CST", 8*3600)
+	now := time.Date(2026, 11, 13, 7, 0, 0, 0, loc)
+	future := now.Add(time.Hour)
+	sch := &store.Schedule{
+		FreqType: "daily", AtHour: 8, AtMinute: 0, NextRunAt: &future,
+	}
+
+	if got := nextRunForExecution(sch, now, true); !got.Equal(future) {
+		t.Fatalf("manual run should keep future plan: got %v, want %v", got, future)
+	}
+	if got := nextRunForExecution(sch, now, false); !got.Equal(NextRun(sch, now)) {
+		t.Fatalf("scheduled run should advance: got %v", got)
+	}
+
+	past := now.Add(-time.Hour)
+	sch.NextRunAt = &past
+	if got := nextRunForExecution(sch, now, true); !got.Equal(NextRun(sch, now)) {
+		t.Fatalf("manual run with overdue plan should advance: got %v", got)
+	}
+}

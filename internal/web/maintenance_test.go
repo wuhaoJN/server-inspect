@@ -117,3 +117,49 @@ func TestServerMaintenanceAPI(t *testing.T) {
 		t.Fatalf("missing server status = %d, want 404", status)
 	}
 }
+
+func TestBatchSummarySkippedTotal(t *testing.T) {
+	env := newTestEnv(t)
+	client := newClient(t)
+	base := env.http.URL
+
+	if status, resp := call(t, client, http.MethodPost, base+"/api/login",
+		map[string]string{"username": "admin", "password": "Admin@12345"}, ""); status != http.StatusOK || !resp.OK {
+		t.Fatalf("login: status=%d %s", status, resp.Error)
+	}
+
+	now := time.Now().UTC()
+	rec := &store.Inspection{
+		ServerID: 1, ServerName: "skip-total", Host: "10.0.0.1",
+		Status: "ok", Score: 100, MetricsJSON: "{}", ReportJSON: "{}",
+		StartedAt: now, FinishedAt: now,
+	}
+	if err := env.st.CreateInspection(rec); err != nil {
+		t.Fatalf("CreateInspection: %v", err)
+	}
+
+	status, resp := call(t, client, http.MethodPost, base+"/api/batches", map[string]any{
+		"inspectionIds":      []int64{rec.ID},
+		"skipped":            1,
+		"maintenanceSkipped": 2,
+		"elapsedMs":          1000,
+	}, base)
+	if status != http.StatusOK || !resp.OK {
+		t.Fatalf("create batch: status=%d %s", status, resp.Error)
+	}
+	var got struct {
+		Batch struct {
+			Skipped int `json:"skipped"`
+		} `json:"batch"`
+		Summary struct {
+			Skipped            int `json:"skipped"`
+			MaintenanceSkipped int `json:"maintenanceSkipped"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(resp.Data, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Batch.Skipped != 3 || got.Summary.Skipped != 3 || got.Summary.MaintenanceSkipped != 2 {
+		t.Fatalf("unexpected skipped stats: %#v", got)
+	}
+}

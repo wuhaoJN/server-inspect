@@ -429,7 +429,7 @@ func TestNetworkScanBulkImportAndConfigure(t *testing.T) {
 		t.Fatalf("configured count = %d, views = %#v", configured, views)
 	}
 
-	// 修改主机地址或端口时必须重新输入密码，禁止把旧凭据发往新目标。
+	// 修改登录用户名、主机地址或端口时必须重新输入密码，禁止把旧凭据发往新目标。
 	if status, _ := call(t, client, http.MethodPost, base+"/api/servers/test", map[string]any{
 		"name": "10.0.0.1", "host": "10.0.0.2", "port": 22, "username": "root", "serverId": pendingID,
 	}, base); status != http.StatusBadRequest {

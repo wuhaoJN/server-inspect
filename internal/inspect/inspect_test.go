@@ -456,3 +456,27 @@ func TestBuildFirewallItem(t *testing.T) {
 		})
 	}
 }
+
+type alternatingTimeoutRunner struct{ calls int }
+
+func (r *alternatingTimeoutRunner) Run(_ context.Context, _ string) (string, string, error) {
+	r.calls++
+	if r.calls%2 == 1 {
+		return "", "", context.DeadlineExceeded
+	}
+	return "ok", "", nil
+}
+
+func TestCollectorTimeoutCounterResets(t *testing.T) {
+	c := &collector{
+		runner:  &alternatingTimeoutRunner{},
+		timeout: time.Second,
+		results: map[string]cmdResult{},
+	}
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatalf("collect returned error after non-consecutive timeouts: %v", err)
+	}
+	if len(c.results) != len(commandList) {
+		t.Fatalf("results=%d, want %d", len(c.results), len(commandList))
+	}
+}

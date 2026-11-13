@@ -4,7 +4,7 @@
 - 巡检命令只读，不修改目标系统、不安装 Agent、不提权。
 - 不记录/提交真实密码、主密钥、Cookie。
 - 未获用户明确同意，不部署、不重启服务、不改防火墙。
-- 修改主机/端口必须重新输入登录密码。
+- 修改登录用户名/主机/端口必须重新输入登录密码。
 - 前端只改 internal/web/static/，修改后重新构建二进制。
 - 完成后运行 go test ./...、go vet ./...；staticcheck 未安装时用 go run honnef.co/go/tools/cmd/staticcheck@latest ./...。
 - 当前目录为 Git 仓库（main，远程 origin 已配置），动手前用 git status 确认工作区；不要擅自 force push。

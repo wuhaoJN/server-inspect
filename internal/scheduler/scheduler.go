@@ -101,8 +101,8 @@ func (s *Scheduler) execute(ctx context.Context, sch *store.Schedule, manual boo
 	}()
 
 	now := time.Now()
-	next := NextRun(sch, now)
-	// 先推进下次执行时间，避免任务执行期间被重复触发。
+	next := nextRunForExecution(sch, now, manual)
+	// 更新执行状态与下次执行时间；定时执行会推进，手动执行保留仍在未来的原计划。
 	if err := s.store.UpdateScheduleRun(sch.ID, now, next, 0, "running", ""); err != nil {
 		return nil, err
 	}
@@ -196,6 +196,15 @@ func (s *Scheduler) Targets(sch *store.Schedule) ([]*store.Server, error) {
 		return nil, err
 	}
 	return stats.Servers, nil
+}
+
+// nextRunForExecution 计算一次执行后的下次执行时间。
+// 手动“立即执行”时，如果原计划时间仍在未来，则保留原计划，避免把当天的定时任务跳过。
+func nextRunForExecution(sch *store.Schedule, now time.Time, manual bool) time.Time {
+	if manual && sch.NextRunAt != nil && sch.NextRunAt.After(now) {
+		return *sch.NextRunAt
+	}
+	return NextRun(sch, now)
 }
 
 // NextRun 根据频率计算下一次执行时间（使用服务器本地时区）。

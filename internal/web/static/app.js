@@ -1072,26 +1072,29 @@ function openServerForm(server) {
 
   const hostInput = form.elements.host;
   const portInput = form.elements.port;
-  const targetChanged = () => isEdit && server.configured &&
-    (hostInput.value.trim() !== server.host || (Number(portInput.value) || 22) !== server.port);
+  const usernameInput = form.elements.username;
+  const credentialsChanged = () => isEdit && server.configured &&
+    (hostInput.value.trim() !== server.host ||
+      (Number(portInput.value) || 22) !== server.port ||
+      usernameInput.value.trim() !== server.username);
   const syncPasswordPlaceholder = () => {
     if (!passwordInput) return;
-    if (targetChanged()) {
-      passwordInput.placeholder = '主机/端口已修改，请输入新的登录密码';
+    if (credentialsChanged()) {
+      passwordInput.placeholder = '登录用户名/主机/端口已修改，请输入新的登录密码';
     } else {
       passwordInput.placeholder = needsCredential ? '请输入 SSH 登录密码' : '留空则保持原密码';
     }
   };
   hostInput.addEventListener('input', syncPasswordPlaceholder);
   portInput.addEventListener('input', syncPasswordPlaceholder);
+  usernameInput.addEventListener('input', syncPasswordPlaceholder);
   syncPasswordPlaceholder();
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = collect();
-    if (isEdit && server.configured && !payload.password &&
-      (payload.host !== server.host || payload.port !== server.port)) {
-      toast('修改了主机地址或端口，请重新输入登录密码', 'warn');
+    if (isEdit && server.configured && !payload.password && credentialsChanged()) {
+      toast('修改了登录用户名、主机地址或端口，请重新输入登录密码', 'warn');
       passwordInput.focus();
       return;
     }
@@ -1125,9 +1128,8 @@ function openServerForm(server) {
   document.getElementById('testBtn').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     const payload = collect();
-    if (isEdit && server.configured && !payload.password &&
-      (payload.host !== server.host || payload.port !== server.port)) {
-      toast('修改了主机地址或端口，请重新输入登录密码', 'warn');
+    if (isEdit && server.configured && !payload.password && credentialsChanged()) {
+      toast('修改了登录用户名、主机地址或端口，请重新输入登录密码', 'warn');
       passwordInput.focus();
       return;
     }
@@ -1428,7 +1430,7 @@ function buildBatchSummary(results, skipped, maintenanceSkipped, elapsedMs) {
     priority: priority.slice(0, 12),
     issueCount: priority.length,
     common,
-    skipped,
+    skipped: skipped + maintenanceSkipped,
     maintenanceSkipped,
     elapsedMs,
   };

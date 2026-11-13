@@ -122,6 +122,9 @@ func (c *collector) collect(ctx context.Context) error {
 			} else if c.firstErr == nil {
 				c.firstErr = err
 			}
+		} else {
+			// 只有连续超时才中止；任意一次正常返回都重新计数。
+			timeouts = 0
 		}
 		c.results[def.key] = res
 	}

@@ -134,6 +134,9 @@ func (c *Client) Close() error {
 }
 
 // safeBuffer 让超时返回与后台写入可以安全并发。
+// 限制单条命令输出上限，避免异常目标持续输出导致内存占用失控。
+const maxSafeBufferBytes = 8 << 20
+
 type safeBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -142,7 +145,16 @@ type safeBuffer struct {
 func (s *safeBuffer) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.b.Write(p)
+	total := len(p)
+	remaining := maxSafeBufferBytes - s.b.Len()
+	if remaining <= 0 {
+		return total, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	_, _ = s.b.Write(p)
+	return total, nil
 }
 
 func (s *safeBuffer) String() string {

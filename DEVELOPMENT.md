@@ -181,7 +181,7 @@ web    → 所有内部业务包
 ### 7.1 凭据
 
 - 服务器密码必须使用 `secret.Cipher` 加密；禁止明文落库。
-- 修改主机地址或端口时，必须要求重新输入密码，防止旧凭据被静默发往新目标。
+- 修改登录用户名、主机地址或端口时，必须要求重新输入密码，防止旧凭据被静默发往新目标。
 - 测试连接同样遵守该规则。
 - API 永不返回密码字段；日志不记录认证失败的具体密码。
 
@@ -306,13 +306,13 @@ go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 ### 11.1 版本
 
 - 版本号在 `main.version`，构建时通过 `-X main.version=` 注入。
-- 功能修复/新增后递增版本（示例：1.0.14 → 1.0.15）。
+- 功能修复/新增后递增版本（示例：1.0.15 → 1.0.16）。
 
 ### 11.2 构建
 
 ```bash
 ./release.sh                 # Linux amd64 + arm64 → dist/
-VERSION=1.0.15 ./release.sh   # 指定版本
+VERSION=1.0.16 ./release.sh   # 指定版本
 ```
 
 发布包包含：
@@ -354,7 +354,7 @@ ssh root@host 'bash /tmp/install.sh --port 8080'
 
 - 当前仓库为 `main` 分支，远程 `origin` 已配置为 GitHub（SSH Deploy Key，写权限）。
 - 修改前先 `git status` 确认工作区；重要改动完成后本地提交。
-- 提交信息建议使用下面的前缀；发布时打标签，例如 `git tag -a v1.0.7 -m "release v1.0.7"`。
+- 提交信息建议使用下面的前缀；发布时打标签，例如 `git tag -a v1.0.16 -m "release v1.0.16"`。
 - **不要提交**：`dist/`、`server-inspect.exe`、`data/`、日志、真实凭据。它们已在 `.gitignore` 中排除。
 - 推送：`git push origin main`；发布标签：`git push --tags`。未经用户同意不要 `force push` 或改写历史。
 - `.gitattributes` 已强制 shell/systemd/源码文件使用 LF，避免 Windows 下 checkout 后 Linux 脚本无法执行。
@@ -401,7 +401,7 @@ chore: 升级依赖
 | 服务启动失败 203/EXEC | 检查二进制执行位、SELinux、`journalctl -u server-inspect` |
 | 浏览器无法访问 | 服务监听地址、UFW/firewalld、云安全组 |
 | 主机指纹不一致 | 服务器重装/换 IP；编辑服务器重新信任 |
-| 修改主机后测试连接报错 | 需要重新输入密码（安全设计） |
+| 修改登录用户名/主机后测试连接报错 | 需要重新输入密码（安全设计） |
 | 升级后界面仍旧 | 强刷；静态资源已配置 no-cache |
 | 数据目录异常 | 不要放 NFS；确认属主 `inspect`；备份 `master.key` |
 | 忘记管理员密码 | `runuser -u inspect -- ... -reset-admin-pass` |
